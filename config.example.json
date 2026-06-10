@@ -1,0 +1,17 @@
+{
+  "feishu": {
+    "sheet_token": "YOUR_SHEET_TOKEN",
+    "sheet_id": "YOUR_SHEET_ID",
+    "token_file": "~/.qclaw/skills-config/feishu/tokens/user_token.json",
+    "space_id": "YOUR_WIKI_SPACE_ID",
+    "default_parent_node": "YOUR_PARENT_NODE_TOKEN"
+  },
+  "wechat": {
+    "cookies_path": ".data/wechat-cookies.json"
+  },
+  "ima": {
+    "credential_dir": "~/.config/ima",
+    "knowledge_base_id": "YOUR_KNOWLEDGE_BASE_ID"
+  },
+  "article_storage": ".data/articles"
+}

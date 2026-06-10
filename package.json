@@ -1,0 +1,16 @@
+{
+  "name": "wechat-mp-client",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "轻量级公众号文章抓取客户端",
+  "scripts": {
+    "login": "node src/login-server.js",
+    "search": "node src/cli.js search",
+    "articles": "node src/cli.js articles",
+    "download": "node src/cli.js download"
+  },
+  "dependencies": {
+    "turndown": "^7.2.0",
+    "cheerio": "^1.1.2"
+  }
+}
