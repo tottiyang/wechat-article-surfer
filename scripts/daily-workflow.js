@@ -41,7 +41,7 @@ const [YEAR, MONTH] = TARGET_DATE.split('-');
 function sanitize(s) { return s.replace(/[<>:"/\\|?*]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100); }
 const imaName = (biz, title) => `${sanitize(biz)}-${TARGET_DATE}-${sanitize(title)}.md`;
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-function now() { return new Date().toISOString().slice(0, 19).replace('T', ' '); }
+function now() { return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-'); }
 
 function getFeishuToken() {
   const f = CONFIG.feishu.token_file.replace(/^~/, process.env.HOME || '');
@@ -134,7 +134,7 @@ async function getFakeids() {
 async function updateSheetResult(rowIndex, result, detail = '') {
   const sid = CONFIG.feishu.sheet_id;
   const cell = `E${rowIndex}`; // E列: 最后拉取结果
-  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-');
   const value = detail ? `${now}|${result}|${detail}` : `${now}|${result}`;
   return feishuSheet(`/values`, 'PUT', {
     valueRange: { range: `${sid}!${cell}`, values: [[value]] }
