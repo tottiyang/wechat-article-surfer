@@ -242,8 +242,10 @@ const FREQ = {
   BATCH_PAUSE_MAX: 180,
   // 每日最大 API 调用量（保护，防止意外跑飞）
   DAILY_CAP: 200,
-  // 遇到频控后的重试等待（秒）
+  // 遇到频控(200013)后的重试等待（秒）
   RETRY_AFTER_BLOCK: 300,
+  // 遇到通用API错误的重试等待（秒）- 较短，因为可能是瞬态错误
+  RETRY_AFTER_ERROR: 15,
   // 最大重试次数
   MAX_RETRIES: 2,
 };
@@ -276,41 +278,39 @@ export async function phase1Partial(accounts, startIdx = 0, count = 10) {
       
       while (retries <= FREQ.MAX_RETRIES) {
         result = await getRegularArticles(fakeid, 50);
-        
-        if (result.ret === 200013 || result.base_resp?.ret === 200013) {
-          retries++;
-          if (retries <= FREQ.MAX_RETRIES) {
-            const wait = FREQ.RETRY_AFTER_BLOCK * retries;
-            console.log(`  ⚠️  触发频控(ret=200013)，等待 ${wait}s 后重试(${retries}/${FREQ.MAX_RETRIES})...`);
-            await sleep(wait * 1000);
-            continue;
-          } else {
-            console.log(`  ⛔ 频控重试耗尽，跳过`);
-            finalResult = FETCH_RESULT.FREQ_CONTROL;
-            detail = 'ret=200013';
-            results.errors.push({ name, error: '频控限制(ret=200013)' });
-            break;
-          }
+
+        const actualRet = result.ret ?? result.base_resp?.ret;
+
+        // ret=0 or app_msg_list present → 成功
+        if (actualRet === 0 || result.app_msg_list) {
+          finalResult = FETCH_RESULT.SUCCESS;
+          break;
         }
-        
-        if (result.ret === 200002 || result.base_resp?.ret === 200002) {
+
+        // 200002: 参数无效 → 永久跳过，不重试
+        if (actualRet === 200002) {
           console.log(`  ⚠️  API参数无效(ret=200002)，跳过`);
           finalResult = FETCH_RESULT.INVALID_ARGS;
           detail = 'ret=200002';
           results.errors.push({ name, error: '参数无效(ret=200002)' });
           break;
         }
-        
-        if (result.ret !== 0) {
-          console.log(`  ⚠️  API不可用(ret=${result.ret})，跳过`);
-          finalResult = FETCH_RESULT.API_ERROR;
-          detail = `ret=${result.ret}`;
-          results.errors.push({ name, error: `API不可用(ret=${result.ret})` });
+
+        // 其他错误(-1/200013/undefined等) → 重试
+        retries++;
+        if (retries <= FREQ.MAX_RETRIES) {
+          let wait = actualRet === 200013 ? FREQ.RETRY_AFTER_BLOCK * retries : FREQ.RETRY_AFTER_ERROR * retries;
+          const retLabel = actualRet === 200013 ? '频控' : 'API错误';
+          console.log(`  ⚠️  ${retLabel}(ret=${actualRet})，等待 ${wait}s 后重试(${retries}/${FREQ.MAX_RETRIES})...`);
+          await sleep(wait * 1000);
+          continue;
+        } else {
+          console.log(`  ⛔  ${actualRet === 200013 ? '频控' : 'API'}重试耗尽(ret=${actualRet})，跳过`);
+          finalResult = actualRet === 200013 ? FETCH_RESULT.FREQ_CONTROL : FETCH_RESULT.API_ERROR;
+          detail = `ret=${actualRet}`;
+          results.errors.push({ name, error: `${actualRet === 200013 ? '频控限制' : 'API不可用'}(ret=${actualRet})` });
           break;
         }
-        
-        finalResult = FETCH_RESULT.SUCCESS;
-        break;
       }
       
       if (finalResult !== FETCH_RESULT.SUCCESS) {

@@ -1,4 +1,4 @@
-import { loadCookies, cookiesToString, parseSetCookies } from './cookie-store.js';
+import { loadCookies, saveCookies, cookiesToString, parseSetCookies } from './cookie-store.js';
 import { Buffer } from 'node:buffer';
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 MicroMessenger/6.8.0(0x16080000) NetType/WIFI MiniProgramEnv/Mac MacWechat/WECHAT';
@@ -67,6 +67,23 @@ export async function proxyMpRequest({ method, endpoint, query, body, cookie, pa
 
   const mpResponse = await fetch(url.toString(), fetchOpts);
   const setCookies = mpResponse.headers.getSetCookie();
+
+  // 自动将 Set-Cookie 中的新 cookies 更新到存储，避免 token 过期
+  if (setCookies && setCookies.length > 0) {
+    try {
+      const existing = loadCookies();
+      if (existing) {
+        const parsed = parseSetCookies(setCookies);
+        // 合并: 保留不在 Set-Cookie 中的原 cookies + 新值
+        const mergedCookies = existing.cookies.filter(
+          ec => !parsed.some(pc => pc.name === ec.name)
+        ).concat(parsed);
+        saveCookies(existing.token, mergedCookies);
+      }
+    } catch (e) {
+      // cookie 更新失败不影响主逻辑，仅静默跳过
+    }
+  }
 
   if (parseJson) {
     return mpResponse.json();
