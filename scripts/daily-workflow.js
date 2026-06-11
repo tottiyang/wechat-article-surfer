@@ -137,7 +137,7 @@ async function updateSheetResult(rowIndex, result, detail = '') {
   const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-');
   const value = detail ? `${now}|${result}|${detail}` : `${now}|${result}`;
   return feishuSheet(`/values`, 'PUT', {
-    valueRange: { range: `${sid}!${cell}`, values: [[value]] }
+    valueRange: { range: `${sid}!${cell}:${cell}`, values: [[value]] }
   });
 }
 

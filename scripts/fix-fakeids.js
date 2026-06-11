@@ -78,7 +78,7 @@ async function searchOne(name) {
 
 /** Update a cell value in Feishu sheet */
 async function updateSheetValue(cell, value) {
-  const range = `${SHEET_ID}!${cell}`;
+  const range = `${SHEET_ID}!${cell}:${cell}`;
   const url = `https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/${SHEET_TOKEN}/values`;
   const body = { valueRange: { range, values: [[value]] } };
   const resp = await fetch(url, {
