@@ -628,7 +628,7 @@ async function main() {
 
   // Phase 1: Fetch + Download
   console.log('🚀  Phase 1: 文章拉取');
-  const p1 = await phase1(allAccounts);
+  const p1 = await phase1Partial(allAccounts, 0, allAccounts.length);
   console.log(`\n  已下载: ${p1.downloaded.length} 篇 | 错误: ${p1.errors.length}`);
 
   // Phase 1b: IMA Upload
