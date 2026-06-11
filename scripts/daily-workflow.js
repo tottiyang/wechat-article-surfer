@@ -468,7 +468,7 @@ const ANALYSIS_PROMPT_TEMPLATE = `你是一位专业的财经文章深度分析�
 
 function callLlm(prompt) {
   const out = execSync(`openclaw infer model run --model "qclaw/pool-deepseek-v4-flash" --prompt ${JSON.stringify(prompt)} --json 2>/dev/null`, {
-    encoding: 'utf-8', timeout: 600000, maxBuffer: 10 * 1024 * 1024,
+    encoding: 'utf-8', timeout: 1200000, maxBuffer: 10 * 1024 * 1024,
   });
   const parsed = JSON.parse(out);
   // Output format: {outputs: [{text: "..."}]}
