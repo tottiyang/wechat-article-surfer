@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '.data');
+const DATA_DIR = join(__dirname, '..', '.data');
 const COOKIE_FILE = join(DATA_DIR, 'wechat-cookies.json');
 
 // ========== 固定 Cookie 存储（单用户） ==========

@@ -141,7 +141,7 @@ const routes = {
     loginState.sessionCookie = null;
     loginState.nickname = '';
     // 同时删除磁盘上的 cookie 文件
-    const cookieFile = join(__dirname, '.data', 'wechat-cookies.json');
+    const cookieFile = join(__dirname, '..', '.data', 'wechat-cookies.json');
     if (existsSync(cookieFile)) {
       unlinkSync(cookieFile);
       console.log('[logout] deleted cookie file');
@@ -383,7 +383,7 @@ const routes = {
     // 这里等待最多 12 秒，每 800ms 检查一次磁盘 cookies
     // 在此期间前端显示「正在登录...」，不会闪红色错误
     console.log('[login] ⚠️ bizlogin failed, waiting for server-poll to save cookies...');
-    const cookieFile = join(__dirname, '.data', 'wechat-cookies.json');
+    const cookieFile = join(__dirname, '..', '.data', 'wechat-cookies.json');
     for (let i = 0; i < 15; i++) { // 15 × 800ms = 12秒
       await new Promise(r => setTimeout(r, 800));
       if (existsSync(cookieFile)) {
@@ -410,7 +410,7 @@ const routes = {
 
   // API: 删除磁盘上的 cookie 文件
   'GET /api/clear-cookies': async () => {
-    const cookieFile = join(__dirname, '.data', 'wechat-cookies.json');
+    const cookieFile = join(__dirname, '..', '.data', 'wechat-cookies.json');
     if (existsSync(cookieFile)) {
       unlinkSync(cookieFile);
       console.log('[clear-cookies] deleted:', cookieFile);

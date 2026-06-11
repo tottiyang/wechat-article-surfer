@@ -1,7 +1,11 @@
 import { proxyMpRequest } from "../src/proxy.js";
 import { readFileSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
-const { token, cookies } = JSON.parse(readFileSync(".data/wechat-cookies.json", "utf-8"));
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dirname, '..');
+const { token, cookies } = JSON.parse(readFileSync(join(ROOT, '.data', 'wechat-cookies.json'), "utf-8"));
 const cookieStr = (cookies || [])
   .filter(c => c.value !== "EXPIRED")
   .map(c => `${c.name}=${c.value}`)

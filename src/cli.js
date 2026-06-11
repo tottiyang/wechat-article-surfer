@@ -18,7 +18,7 @@ import TurndownService from 'turndown';
 import * as cheerio from 'cheerio';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '.data', 'articles');
+const DATA_DIR = join(__dirname, '..', '.data', 'articles');
 mkdirSync(DATA_DIR, { recursive: true });
 
 const turndownService = new TurndownService({
