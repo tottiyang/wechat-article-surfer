@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -467,15 +467,29 @@ const ANALYSIS_PROMPT_TEMPLATE = `你是一位专业的财经文章深度分析�
 // ═══════════════════════════════════════════════════════════════════
 
 function callLlm(prompt) {
-  const out = execSync(`openclaw infer model run --model "qclaw/pool-deepseek-v4-flash" --prompt ${JSON.stringify(prompt)} --json 2>/dev/null`, {
-    encoding: 'utf-8', timeout: 1200000, maxBuffer: 10 * 1024 * 1024,
+  // execFileSync 避免 shell，直连子进程，解决长中文参数卡死问题
+  const out = execFileSync('openclaw', [
+    'infer', 'model', 'run',
+    '--model', 'qclaw/pool-deepseek-v4-flash',
+    '--prompt', prompt,
+    '--json',
+  ], {
+    encoding: 'utf-8', timeout: 600000,
+    maxBuffer: 10 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const parsed = JSON.parse(out);
-  // Output format: {outputs: [{text: "..."}]}
-  return parsed.outputs?.[0]?.text || parsed.response || parsed.text || parsed.content || out;
+  try {
+    const parsed = JSON.parse(out);
+    return parsed.outputs?.[0]?.text || '';
+  } catch { return ''; }
 }
 
 export async function analyzeArticles(downloaded) {
+  // 清理残留 zombie openclaw-infer 进程，避免阻塞新推理
+  try {
+    execSync(`ps aux | grep 'openclaw-infer' | grep -v grep | awk '{print $2}' | xargs -r kill -9 2>/dev/null`, { timeout: 5000 });
+  } catch { /* non-fatal */ }
+
   if (downloaded.length === 0) { console.log('⚠️  没有文章需要分析'); return null; }
 
   console.log(`\n🧠  AI 分析 ${downloaded.length} 篇`);
@@ -626,10 +640,30 @@ async function main() {
   const allAccounts = await getFakeids();
   console.log(`  共 ${allAccounts.length} 个公众号\n`);
 
-  // Phase 1: Fetch + Download
+  // Phase 1: Fetch + Download（分批冷却，防 session 频控）
   console.log('🚀  Phase 1: 文章拉取');
-  const p1 = await phase1Partial(allAccounts, 0, allAccounts.length);
-  console.log(`\n  已下载: ${p1.downloaded.length} 篇 | 错误: ${p1.errors.length}`);
+  const BATCH_SIZE_FETCH = 10;
+  const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
+  const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
+  const enabledAccounts = allAccounts.filter(a => a.status === '启用');
+  for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
+    const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
+    const totalBatches = Math.ceil(enabledAccounts.length / BATCH_SIZE_FETCH);
+    console.log(`\n📦  下载批次 ${batchNo}/${totalBatches} (账号 ${batchStart+1}-${Math.min(batchStart+BATCH_SIZE_FETCH, enabledAccounts.length)})`);
+    const p1 = await phase1Partial(enabledAccounts, batchStart, BATCH_SIZE_FETCH);
+    allP1.downloaded.push(...p1.downloaded);
+    allP1.errors.push(...p1.errors);
+    allP1.skipped.push(...p1.skipped);
+    allP1.noArticle.push(...p1.noArticle);
+    // 结束页后冷却（让 session 恢复）
+    if (batchStart + BATCH_SIZE_FETCH < enabledAccounts.length) {
+      const coolMin = Math.ceil(COOLDOWN_MS / 60000);
+      console.log(`\n⏳ Session 冷却 ${coolMin}min...（剩余 ${enabledAccounts.length - batchStart - BATCH_SIZE_FETCH} 个账号）`);
+      await sleep(COOLDOWN_MS);
+    }
+  }
+  const p1 = allP1;
+  console.log(`\n  已下载: ${p1.downloaded.length} 篇 | 错误: ${p1.errors.length} | 无文章: ${p1.noArticle.length}`);
 
   // Phase 1b: IMA Upload
   if (p1.downloaded.length > 0) {
