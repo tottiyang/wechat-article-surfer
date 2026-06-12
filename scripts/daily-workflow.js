@@ -625,7 +625,10 @@ async function aggregateAllResults(allResults, targetDate) {
   if (allResults.length <= 5) return null;
 
   const count = allResults.length;
-  const AGGREGATION_PROMPT = `你是一位专业的财经汇总分析师。以下是今天从${count}篇财经公众号文章中提取的数据点。请将它们整合成一份精简的每日市场总结。
+  const AGGR_BATCH = 14; // 每批聚合数量
+  const totalBatches = Math.ceil(count / AGGR_BATCH);
+  
+  const BATCH_PROMPT = `你是一位专业的财经汇总分析师。以下是今天从一批财经公众号文章中提取的数据点。请将它们整合成一份精简的分组汇总。
 
 ## 输出格式
 
@@ -648,12 +651,44 @@ async function aggregateAllResults(allResults, targetDate) {
 2. 每点标注来源公众号
 3. 突出共识和分歧
 4. 只基于原文内容，不添加结论`;
+  
+  const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多份分组汇总报告。请将它们合并成一份精简的每日市场总结。注意消除重复内容，只保留每组的核心发现。
+
+## 输出格式（与分组报告相同结构）
+
+### 一、热点板块与个股
+### 二、核心观点分类
+#### 市场趋势判断
+#### 行业分析观点
+#### 个股推荐/看空观点（含具体标的）
+#### 操作策略建议
+#### 风险警示
+### 三、共识与分歧`;
 
   try {
-    console.log(`  聚合 ${allResults.length} 篇数据点`);
-    const prompt = AGGREGATION_PROMPT + `\n\n---\n以下是今日提取的 ${allResults.length} 条数据点：\n\n` + allResults.join('\n\n---\n\n');
-    const finalReport = await callLlm(prompt);
-    console.log(`  ✅ (${(prompt.length / 1024).toFixed(0)}KB → ${(finalReport.length / 1024).toFixed(0)}KB)`);
+    // Stage 1: 分批聚合
+    const batchResults = [];
+    for (let i = 0; i < count; i += AGGR_BATCH) {
+      const batch = allResults.slice(i, i + AGGR_BATCH);
+      const batchNo = Math.floor(i / AGGR_BATCH) + 1;
+      console.log(`  分组 ${batchNo}/${totalBatches} (${batch.length} 篇)`);
+      const prompt = BATCH_PROMPT + `\n\n---\n以下第 ${batchNo}/${totalBatches} 组数据点（共 ${batch.length} 篇）：\n\n` + batch.join('\n\n---\n\n');
+      const result = await callLlm(prompt);
+      console.log(`    ✅ (${(result.length / 1024).toFixed(1)}KB)`);
+      batchResults.push(result);
+      if (i + AGGR_BATCH < count) await sleep(2000);
+    }
+    
+    // Stage 2: 合并
+    let finalReport;
+    if (batchResults.length <= 1) {
+      finalReport = batchResults[0];
+    } else {
+      console.log(`  合并 ${batchResults.length} 份分组汇总`);
+      const mergePrompt = MERGE_PROMPT + `\n\n---\n以下是 ${batchResults.length} 份分组汇总：\n\n` + batchResults.join('\n\n---\n\n');
+      finalReport = await callLlm(mergePrompt);
+    }
+    console.log(`  ✅ ${(finalReport.length / 1024).toFixed(1)}KB`);
 
     // Wrap with title
     const report = [
