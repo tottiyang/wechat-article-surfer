@@ -558,8 +558,8 @@ export async function analyzeArticles(downloaded) {
     content: readFileSync(f.filePath, 'utf-8').slice(0, 2000),
   }));
 
-  // Process one article per batch for faster response
-  const BATCH_SIZE = 1;
+  // 批量处理，减少 LLM 调用次数（降低 session 数）
+  const BATCH_SIZE = 8;
   const allResults = [];
 
   for (let b = 0; b < articles.length; b += BATCH_SIZE) {
