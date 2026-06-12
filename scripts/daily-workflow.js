@@ -628,42 +628,67 @@ async function aggregateAllResults(allResults, targetDate) {
   const AGGR_BATCH = 14; // 每批聚合数量
   const totalBatches = Math.ceil(count / AGGR_BATCH);
   
-  const BATCH_PROMPT = `你是一位专业的财经汇总分析师。以下是今天从一批财经公众号文章中提取的数据点。请将它们整合成一份精简的分组汇总。
+  const BATCH_PROMPT = `你是一位专业的财经汇总分析师。以下是今天从一批财经公众号文章中提取的数据点。请将它们整合成一份详细的分组汇总，**内容要像扎实研报，不要像摘要**。
 
-## 输出格式
+## 铁律（必须遵守）
 
-### 一、热点板块与个股
-按板块/主题归类整合，每个板块列出讨论的公众号，标注观点一致或分歧。
+### 📋 第一大铁律：具体标的必须全量保留
+所有文章中明确提及的股票/ETF/转债/期货品种，**一个都不能少**。
+格式：**[标的名称（代码）] 方向: 观点 (来源)**
+例如：**[深南电路（002916）] 🔺看好—PCB龙头，Rubin服务器价值量暴涨233% (君临策)**
 
-### 二、核心观点分类
-#### 市场趋势判断
-#### 行业分析观点
-#### 个股推荐/看空观点（含具体标的）
-#### 操作策略建议
-#### 风险警示
+### 📰 第二大铁律：每条观点标注具体来源公众号
+每条观点必须带具体的公众号名，禁止用聚合表述，用这种格式：
+- **[公众号A]** 具体观点和逻辑展开，包含具体数据...
+- **[公众号B]** 不同观点或补充信息...
 
-### 三、共识与分歧
-- 多篇文章共同认可的观点
-- 观点不一致的地方
+### 💎 第三大铁律：保留特色观点和独特表述
+- 如果某个公众号用了有趣的比喻、极端的观点、反共识的判断，**全部保留**
+- 每篇公众号的独特分析框架和推理逻辑要展开，不要只给结论
+
+### 输出格式
+
+#### 一、热点板块与个股
+按板块/主题归类整合，每个板块用表格或分段展示，标注各公众号观点（一致或分歧）
+
+#### 二、核心观点分类
+**市场趋势判断** — 每家的判断+来源，含论据
+**行业分析观点** — 逐条展开，含来源
+**个股推荐/看空（含具体标的）** — 表格形式，含标的名称、方向、观点、原因、来源
+**操作策略建议** — 每条完整语句，包含来源和条件/理由
+**风险警示** — 每条包含风险点、来源
+
+#### 三、共识与分歧
+- 多篇文章共同认可的观点（标注来源）
+- 观点不一致的地方（详细列出各家立场和依据）
+- 核心分歧的根本原因分析
 
 ## 原则
-1. 跨文章整合，避免逐篇排列
-2. 每点标注来源公众号
-3. 突出共识和分歧
-4. 只基于原文内容，不添加结论`;
-  
-  const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多份分组汇总报告。请将它们合并成一份精简的每日市场总结。注意消除重复内容，只保留每组的核心发现。
+1. 只基于原文内容，不添加结论和预测
+2. 优先保留原文的精彩表述和独特数据
+3. 质量比精简更重要，宁可详细不要遗漏
+4. 如果某篇公众号的观点非常鲜明或独特，要展开说明其推理过程`;
 
-## 输出格式（与分组报告相同结构）
+  const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多份分组汇总报告。请将它们合并成一份扎实的每日市场总结。
 
-### 一、热点板块与个股
-### 二、核心观点分类
-#### 市场趋势判断
-#### 行业分析观点
-#### 个股推荐/看空观点（含具体标的）
-#### 操作策略建议
-#### 风险警示
-### 三、共识与分歧`;
+## 合并铁律
+
+### 📋 铁律一：具体标的全量保留
+把所有分组中的标的合并去重，**一个都不能少**。
+格式：**[标的名称（代码）] 方向: 观点 (来源)**
+
+### 📰 铁律二：每条观点标注具体来源
+禁止模糊标注，必须带具体公众号名
+
+### 💎 铁律三：保留特色观点
+去重时保留最完整的表述，不丢失独特内容
+
+### 输出格式（与分组报告相同结构）
+
+#### 一、热点板块与个股
+#### 二、核心观点分类
+**市场趋势判断** | **行业分析观点** | **个股推荐/看空（含具体标的）** | **操作策略建议** | **风险警示**
+#### 三、共识与分歧`;
 
   try {
     // Stage 1: 分批聚合
@@ -678,7 +703,7 @@ async function aggregateAllResults(allResults, targetDate) {
       batchResults.push(result);
       if (i + AGGR_BATCH < count) await sleep(2000);
     }
-    
+
     // Stage 2: 合并
     let finalReport;
     if (batchResults.length <= 1) {
@@ -845,13 +870,21 @@ async function processDate(date) {
     console.log(`\n📂  检测到已存 ${existing.length} 篇文章，跳过 Phase 1 下载`);
     downloaded = existing;
   } else {
-    // Phase 1: Fetch + Download（分批冷却，防 session 频控）
-    console.log('\n🚀  Phase 1: 文章拉取');
+    // Phase 1: Fetch + Download（分批冷却，防 session 频控 + 断点恢复）
+    // 断点恢复策略：先查 E 列（lastResult），只处理需要重试的账号
+    // SUCCESS/NO_ARTICLE → 已成功，跳过
+    // FREQ_CONTROL/API_ERROR/DOWNLOAD_ERROR → 需要重试
+    // PENDING/空 → 从未拉取过，需要处理
+    console.log('\n🚀  Phase 1: 文章拉取（断点恢复）');
     const BATCH_SIZE_FETCH = 10;
     const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
     const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
     const allAccounts = await getFakeids();
-    const enabledAccounts = allAccounts.filter(a => a.status === '启用');
+    const needRetryAccounts = allAccounts.filter(a => needRetry(a));
+    const enabledAccounts = needRetryAccounts.filter(a => a.status === '启用');
+    if (enabledAccounts.length < allAccounts.filter(a => a.status === '启用').length) {
+      console.log(`  📋  断点恢复: 跳过 ${allAccounts.filter(a => a.status === '启用').length - enabledAccounts.length} 个已成功账号`);
+    }
     
     for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
       const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
