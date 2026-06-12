@@ -560,17 +560,19 @@ function callLlm(prompt) {
         reject(new Error('Kimi API timeout after 180s'));
       }, 180000);
 
-      fetch('https://api.moonshot.cn/v1/chat/completions', {
+      // Kimi Code Plan API — Anthropic Messages 格式
+      // 参考: https://api.kimi.com/coding/v1/messages
+      fetch('https://api.kimi.com/coding/v1/messages', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'kimi-k2-0711-preview',
-          messages: [{ role: 'user', content: prompt }],
+          model: 'kimi-for-coding',
           max_tokens: 16384,
-          temperature: 0.3,
+          messages: [{ role: 'user', content: prompt }],
         }),
         signal: controller.signal,
       })
@@ -580,7 +582,7 @@ function callLlm(prompt) {
         })
         .then(data => {
           clearTimeout(timeout);
-          const content = data.choices?.[0]?.message?.content || '';
+          const content = data.content?.[0]?.text || '';
           if (content) {
             resolve(content);
             return;
