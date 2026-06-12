@@ -648,8 +648,12 @@ export async function analyzeArticles(downloaded) {
 
   if (allResults.length === 0) return null;
 
-  // Combine into final report
-  const report = [
+  // Phase 2b: Aggregation - synthesize all individual analyses into a real summary
+  console.log(`\n🧠  Phase 2b: 跨文章汇总合成`);
+  const aggregatedReport = await aggregateAllResults(allResults, TARGET_DATE);
+
+  // Save per-article file (for IMA)
+  const rawConcat = [
     `# 财经观点汇总 — ${TARGET_DATE}`,
     `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
     ``,
@@ -657,10 +661,128 @@ export async function analyzeArticles(downloaded) {
   ].join('\n\n');
 
   if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
+  
+  // Save both versions
   const rp = join(ANALYSIS_DIR, `${TARGET_DATE}-观点汇总.md`);
-  writeFileSync(rp, report, 'utf-8');
+  writeFileSync(rp, rawConcat, 'utf-8');
+  
+  // Phase 3 uses the aggregated report (smaller, cleaner)
+  const reportForPublish = aggregatedReport || rawConcat;
 
-  return { reportPath: rp, content: report };
+  return { reportPath: rp, content: reportForPublish };
+}
+
+/**
+ * Phase 2b: Aggregate individual analysis results into a topic-based summary
+ */
+async function aggregateAllResults(allResults, targetDate) {
+  if (!allResults || allResults.length === 0) return null;
+
+  // If only 1-5 articles, skip aggregation (already good)
+  if (allResults.length <= 5) return null;
+
+  const AGGR_BATCH = 8; // process 8 analyses per batch
+  const AGGREGATION_PROMPT = `你是一位专业的财经汇总分析师，擅长将多篇财经文章分析结果整合成一份精简的每日市场总结。
+
+## 任务
+将以下每篇文章的分析结果整合成一份连贯的每日市场总结。你的输出必须按以下结构组织，且必须跨文章进行横向整合。
+
+## 输出结构
+
+### 一、当日热点板块与个股
+- 按板块/主题归类，每个板块描述市场关注度
+- 列出讨论该板块的公众号，标注观点一致或分歧
+- 只包含有实质性内容的板块，不要生造
+
+### 二、核心观点分类
+#### 市场趋势判断
+#### 行业分析观点（具体到细分环节）
+#### 个股推荐/看空观点（含具体标的）
+#### 操作策略建议
+#### 风险警示
+
+### 三、共识与分歧
+- 多篇文章共同认可的观点
+- 观点不一致的地方
+- 需要进一步验证的假设
+
+## 输出原则
+1. 跨文章整合同板块/同话题的观点，避免按公众号逐个排列
+2. 每个观点标注来源公众号
+3. 对同一话题的共识和分歧要突出
+4. 只提取原文明确表达的观点
+5. 如果一组内内容不够完整，基于已有信息输出
+6. 输出简洁，避免冗长的表格`;
+
+  const FINAL_AGGR_PROMPT = `以下是你已经生成的${Math.ceil(allResults.length / AGGR_BATCH)}份每日市场总结。请将它们合并成一份最终的每日市场总结报告。
+
+注意：
+1. 避免重复同一内容
+2. 合并对同一板块/话题的观点
+3. 保持精简结构
+4. 标注来源公众号
+5. 输出格式保持与上文一致`;
+
+  try {
+    // Step 1: Aggregate in batches
+    const partialResults = [];
+    const totalBatches = Math.ceil(allResults.length / AGGR_BATCH);
+    
+    for (let i = 0; i < allResults.length; i += AGGR_BATCH) {
+      const batch = allResults.slice(i, i + AGGR_BATCH);
+      const batchNum = Math.floor(i / AGGR_BATCH) + 1;
+      console.log(`  聚合 ${batchNum}/${totalBatches}`);
+      
+      const prompt = AGGREGATION_PROMPT + `\n\n---\n以下是第 ${batchNum}/${totalBatches} 组分析结果：\n\n` + batch.join('\n---\n');
+      
+      try {
+        const result = await callLlm(prompt);
+        partialResults.push(result);
+        console.log(`  ✅`);
+      } catch (e) {
+        console.log(`  ⚠️ 单组聚合失败: ${e.message}`);
+        partialResults.push(batch.slice(0, 3).join('\n'));
+      }
+      
+      if (i + AGGR_BATCH < allResults.length) await sleep(2000);
+    }
+
+    if (partialResults.length === 0) return null;
+
+    // Step 2: Final merge
+    let finalReport;
+    if (partialResults.length <= 1) {
+      finalReport = partialResults[0];
+    } else {
+      console.log(`  最终合并`);
+      const finalPrompt = FINAL_AGGR_PROMPT + `\n\n` + partialResults.join('\n\n---\n\n');
+      try {
+        finalReport = await callLlm(finalPrompt);
+        console.log(`  ✅`);
+      } catch (e) {
+        console.log(`  ⚠️ 最终合并失败，使用分组结果拼接`);
+        finalReport = partialResults.join('\n\n---\n\n');
+      }
+    }
+
+    // Wrap with title
+    const report = [
+      `# 财经观点汇总 — ${targetDate}`,
+      `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
+      ``,
+      finalReport,
+    ].join('\n\n');
+
+    const fp = join(ANALYSIS_DIR, `${targetDate}-汇总.md`);
+    writeFileSync(fp, report, 'utf-8');
+    console.log(`  💾 ${fp}`);
+    console.log(`  📊 ${allResults.length} 篇分析 → 1 份汇总报告`);
+
+    return report;
+  } catch (e) {
+    console.error(`  ❌ 聚合失败: ${e.message}`);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
