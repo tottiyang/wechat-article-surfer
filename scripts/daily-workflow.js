@@ -485,74 +485,17 @@ async function phase1b(downloaded) {
 // Phase 2: AI 观点分析 — 提示词（固化配置）
 // ═══════════════════════════════════════════════════════════════════
 
-const ANALYSIS_PROMPT_TEMPLATE = `你是一位专业的财经文章深度分析师，擅长从财经公众号文章中提取具体的投资标的、板块产业链、操作策略和关键数据。
+const EXTRACT_PROMPT_TEMPLATE = `从以下财经公众号文章中提取关键数据点。输出格式严格按以下字段，每个字段一行，不要添加原文没有的内容。
 
-## 任务
-对以下财经文章进行深度分析和汇总，生成一份结构化的投资观点汇总报告。
+来源: <公众号名> — <文章标题>
+板块/行业: <涉及的具体板块、行业、概念>
+具体标的: <明确提到的股票/ETF/转债名称和代码>
+市场判断: <对大盘/板块的判断>
+核心观点: <关键逻辑，2-3句话概述，包含具体数据>
+操作建议: <推荐的操作和条件>
+风险提示: <提示的风险点>
 
-## 输出要求（严格按以下6个部分输出，禁止省略）
-
-### 一、个股与板块深度提炼
-**这是最重要的部分，必须详细提取。**
-
-对于每篇文章，必须提取：
-1. **具体股票名称和代码**：如"泰和XC"、"圣泉JT"、"亨通GD"等，必须保留原始简称
-2. **板块产业链位置**：如"PCB上游的上游的上游 - 电子布材料 - 芳纶龙头"、"光纤预制棒"、"覆铜板"、"MLCC镍粉"等
-3. **涨价/业绩数据**：具体金额、百分比、时间节点
-4. **供需关系**：产能缺口百分比、扩产周期、订单情况
-5. **核心逻辑**：为什么看好，具体催化剂
-
-**输出格式（每篇文章独立输出）**：
-| 公众号 | 文章标题 | 具体标的 | 板块/产业链位置 | 核心逻辑 | 关键数据 | 作者观点 |
-|--------|----------|----------|----------------|----------|----------|----------|
-
-### 二、大盘判断汇总
-- 汇总所有文章对大盘的判断（上涨/下跌/震荡/筑底/止跌）
-- 列出判断依据和关键数据
-- 标注观点来源（公众号名）
-
-### 三、核心观点分类
-- 市场趋势判断（保留原文关键措辞）
-- 行业分析观点（具体到细分环节）
-- 个股推荐/看空观点（含具体标的）
-- 操作策略建议（具体到买入/卖出/持有条件）
-- 风险警示（具体风险因素）
-
-### 四、操作建议汇总
-- 明确的买入建议（含具体标的和条件）
-- 明确的卖出建议（含条件）
-- 持有/观望建议
-- 套利/波段操作建议（含具体手法）
-
-### 五、风险提示汇总
-- 市场风险
-- 个股风险（具体到标的）
-- 行业风险（具体到细分环节）
-- 宏观风险
-
-### 六、共识与分歧
-- 多篇文章共同认可的观点（共识）
-- 观点不一致的地方（分歧）
-- 需要进一步验证的假设
-
-## 输出原则
-
-1. **具体性优先**：必须提取具体股票名称、代码、板块名称、数据，禁止抽象概括
-2. **保留原文措辞**：关键观点必须保留原文措辞，如"芳纶CTE较低，相比于玻纤布有更好的性能，是高端电子布的首选材料"
-3. **产业链深度**：必须梳理清楚产业链上下游关系，如"PPE树脂 → 覆铜板 → PCB → 电子布 → 芳纶"
-4. **数据完整性**：所有百分比、金额、时间节点必须保留
-5. **观点来源**：每个观点必须标注来源公众号
-6. **禁止省略**：6个部分必须全部输出，禁止用"详见上文"等省略
-7. **禁止抽象**：禁止用"科技板块"、"AI概念"等抽象词汇，必须用"光纤预制棒"、"MLCC镍粉"等具体词汇
-
-## 注意事项
-- 只提取原文明确表达的观点，不要过度推断
-- 无明确观点的文章标注"无明确观点"
-- 禁止输出"分析摘要"、"共性结论"等额外内容
-- 按要求的6个部分输出，不要遗漏
-- 每个部分必须包含具体内容，禁止一句话概括
-- 表格必须包含表头
-`;
+如果某项数据原文未提及，写"无"。`;
 
 // ═══════════════════════════════════════════════════════════════════
 // Phase 2: AI 观点分析
@@ -581,7 +524,7 @@ function callLlm(prompt) {
       body: JSON.stringify({
         model: 'openclaw',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 8192,
+        max_tokens: 16384,
       }),
       signal: controller.signal,
     })
@@ -624,7 +567,7 @@ export async function analyzeArticles(downloaded) {
     console.log(`  批 ${Math.floor(b / BATCH_SIZE) + 1}/${Math.ceil(articles.length / BATCH_SIZE)}`);
 
     const prompt = [
-      ANALYSIS_PROMPT_TEMPLATE,
+      EXTRACT_PROMPT_TEMPLATE,
       '',
       ...batch.flatMap(a => [
         '---',
@@ -681,22 +624,17 @@ async function aggregateAllResults(allResults, targetDate) {
   // If only 1-5 articles, skip aggregation (already good)
   if (allResults.length <= 5) return null;
 
-  const AGGR_BATCH = 8; // process 8 analyses per batch
-  const AGGREGATION_PROMPT = `你是一位专业的财经汇总分析师，擅长将多篇财经文章分析结果整合成一份精简的每日市场总结。
+  const count = allResults.length;
+  const AGGREGATION_PROMPT = `你是一位专业的财经汇总分析师。以下是今天从${count}篇财经公众号文章中提取的数据点。请将它们整合成一份精简的每日市场总结。
 
-## 任务
-将以下每篇文章的分析结果整合成一份连贯的每日市场总结。你的输出必须按以下结构组织，且必须跨文章进行横向整合。
+## 输出格式
 
-## 输出结构
-
-### 一、当日热点板块与个股
-- 按板块/主题归类，每个板块描述市场关注度
-- 列出讨论该板块的公众号，标注观点一致或分歧
-- 只包含有实质性内容的板块，不要生造
+### 一、热点板块与个股
+按板块/主题归类整合，每个板块列出讨论的公众号，标注观点一致或分歧。
 
 ### 二、核心观点分类
 #### 市场趋势判断
-#### 行业分析观点（具体到细分环节）
+#### 行业分析观点
 #### 个股推荐/看空观点（含具体标的）
 #### 操作策略建议
 #### 风险警示
@@ -704,66 +642,18 @@ async function aggregateAllResults(allResults, targetDate) {
 ### 三、共识与分歧
 - 多篇文章共同认可的观点
 - 观点不一致的地方
-- 需要进一步验证的假设
 
-## 输出原则
-1. 跨文章整合同板块/同话题的观点，避免按公众号逐个排列
-2. 每个观点标注来源公众号
-3. 对同一话题的共识和分歧要突出
-4. 只提取原文明确表达的观点
-5. 如果一组内内容不够完整，基于已有信息输出
-6. 输出简洁，避免冗长的表格`;
-
-  const FINAL_AGGR_PROMPT = `以下是你已经生成的${Math.ceil(allResults.length / AGGR_BATCH)}份每日市场总结。请将它们合并成一份最终的每日市场总结报告。
-
-注意：
-1. 避免重复同一内容
-2. 合并对同一板块/话题的观点
-3. 保持精简结构
-4. 标注来源公众号
-5. 输出格式保持与上文一致`;
+## 原则
+1. 跨文章整合，避免逐篇排列
+2. 每点标注来源公众号
+3. 突出共识和分歧
+4. 只基于原文内容，不添加结论`;
 
   try {
-    // Step 1: Aggregate in batches
-    const partialResults = [];
-    const totalBatches = Math.ceil(allResults.length / AGGR_BATCH);
-    
-    for (let i = 0; i < allResults.length; i += AGGR_BATCH) {
-      const batch = allResults.slice(i, i + AGGR_BATCH);
-      const batchNum = Math.floor(i / AGGR_BATCH) + 1;
-      console.log(`  聚合 ${batchNum}/${totalBatches}`);
-      
-      const prompt = AGGREGATION_PROMPT + `\n\n---\n以下是第 ${batchNum}/${totalBatches} 组分析结果：\n\n` + batch.join('\n---\n');
-      
-      try {
-        const result = await callLlm(prompt);
-        partialResults.push(result);
-        console.log(`  ✅`);
-      } catch (e) {
-        console.log(`  ⚠️ 单组聚合失败: ${e.message}`);
-        partialResults.push(batch.slice(0, 3).join('\n'));
-      }
-      
-      if (i + AGGR_BATCH < allResults.length) await sleep(2000);
-    }
-
-    if (partialResults.length === 0) return null;
-
-    // Step 2: Final merge
-    let finalReport;
-    if (partialResults.length <= 1) {
-      finalReport = partialResults[0];
-    } else {
-      console.log(`  最终合并`);
-      const finalPrompt = FINAL_AGGR_PROMPT + `\n\n` + partialResults.join('\n\n---\n\n');
-      try {
-        finalReport = await callLlm(finalPrompt);
-        console.log(`  ✅`);
-      } catch (e) {
-        console.log(`  ⚠️ 最终合并失败，使用分组结果拼接`);
-        finalReport = partialResults.join('\n\n---\n\n');
-      }
-    }
+    console.log(`  聚合 ${allResults.length} 篇数据点`);
+    const prompt = AGGREGATION_PROMPT + `\n\n---\n以下是今日提取的 ${allResults.length} 条数据点：\n\n` + allResults.join('\n\n---\n\n');
+    const finalReport = await callLlm(prompt);
+    console.log(`  ✅ (${(prompt.length / 1024).toFixed(0)}KB → ${(finalReport.length / 1024).toFixed(0)}KB)`);
 
     // Wrap with title
     const report = [
