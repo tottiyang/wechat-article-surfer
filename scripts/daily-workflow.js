@@ -633,35 +633,28 @@ export async function analyzeArticles(downloaded) {
 
   if (allResults.length === 0) return null;
 
-  // Phase 2b: 合并（1次调用）
-  let report;
-  if (allResults.length <= 1) {
-    report = allResults[0];
-  } else {
-    console.log(`\n🧠  合并 ${allResults.length} 批`);
-    const mergePrompt = MERGE_PROMPT + `\n\n---\n以下是 ${allResults.length} 批提取结果：\n\n` + allResults.join('\n\n---\n\n');
-    try {
-      report = await callLlm(mergePrompt);
-      console.log(`  ✅ (${(report.length / 1024).toFixed(1)}KB)`);
-    } catch (e) {
-      console.log(`  ❌ 合并失败: ${e.message}`);
-      report = allResults.join('\n\n---\n\n');
-    }
-  }
-
-  // Wrap with title
-  const finalReport = [
+  // Phase 2b: 直接串联各批提取结果（跳过LLM合并，保留完整细节）
+  // 之前的实践表明LLM合并阶段会被过度精简→丢失具体标的和特色观点
+  console.log(`\n📎  串联 ${allResults.length} 批提取结果（跳过LLM合并，保留完整细节）`);
+  const concatReport = [
     `# 财经观点汇总 — ${TARGET_DATE}`,
     `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
+    `> 共分析 ${downloaded.length} 篇文章`,
     ``,
-    report,
+    ...allResults.flatMap((r, i) => [
+      `---\n## 第 ${i+1} 组 (${Math.min(BATCH_SIZE, articles.length - i * BATCH_SIZE)} 篇)\n`,
+      r,
+    ]),
   ].join('\n\n');
 
   if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
   const rp = join(ANALYSIS_DIR, `${TARGET_DATE}-观点汇总.md`);
-  writeFileSync(rp, finalReport, 'utf-8');
+  writeFileSync(rp, concatReport, 'utf-8');
+  
+  const reportSizeKB = (concatReport.length / 1024).toFixed(1);
+  console.log(`  💾 ${rp} (${reportSizeKB}KB)`);
 
-  return { reportPath: rp, content: finalReport };
+  return { reportPath: rp, content: concatReport };
 }
 
 
