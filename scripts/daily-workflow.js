@@ -485,59 +485,59 @@ async function phase1b(downloaded) {
 // Phase 2: AI 观点分析 — 提示词（固化配置）
 // ═══════════════════════════════════════════════════════════════════
 
-// 一次性提取+聚合提示词（1 次调用完成全部工作，0 session 噪音）
-const SINGLE_PASS_PROMPT = `你是一位专业的财经观点分析助手。以下是今天从多个财经公众号拉取的文章内容。
+// 逐篇提取提示词（每批批量提取）
+const EXTRACT_PROMPT_TEMPLATE = `从以下财经公众号文章中提取关键数据点。输出格式严格按以下字段，每个字段一行，不要添加原文没有的内容。
 
-## 任务
-你的任务分两部分：
-1. 逐篇提取每篇文章的投资观点
-2. 基于提取结果，生成一份汇总报告
+来源: <公众号名> — <文章标题>
+板块/行业: <涉及的具体板块、行业、概念>
+具体标的: <明确提到的股票/ETF/转债名称和代码>
+市场判断: <对大盘/板块的判断>
+核心观点: <关键逻辑，2-3句话概述，包含具体数据>
+操作建议: <推荐的操作和条件>
+风险提示: <提示的风险点>
 
----
-### 第一部分：逐篇提取（思维草稿，不需要输出到最终报告）
-对于每篇文章，提取以下数据点（在脑海中完成即可，不需要输出提取中间结果）：
-- 板块/行业
-- 具体标的（股票/ETF/转债名称和代码）
-- 市场判断
-- 核心观点
-- 操作建议
-- 风险提示
+如果某项数据原文未提及，写"无"。`;
 
----
-### 第二部分：输出汇总报告（按以下格式）
+// 跨批次聚合提示词（1次调用合并所有提取结果）
+const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多篇财经公众文章的分析结果。请将它们合并成一份扎实的每日市场总结。
+
+## 合并铁律
+
+### 📋 铁律一：具体标的全量保留
+所有文章提及的股票/ETF/转债/期货品种，**一个都不能少**。
+格式：**[标的名称（代码）] 方向: 观点 (来源)**
+
+### 📰 铁律二：每条观点标注具体来源公众号
+禁止用"来源涵盖多家公众号"式模糊表述
+
+### 💎 铁律三：保留特色观点
+保留反共识判断、有趣比喻、极端观点、独特分析框架
+
+### 输出格式
 
 ## 一、热点板块与个股
-按板块/主题归类，每个板块标注涉及的公众号来源。
-**铁律：具体标的（股票/ETF/转债/期货品种）一个都不能少**
-格式：[标的名称（代码）] 方向: 观点 (来源公众号)
+按板块/主题归类，每种观点标注源公众号
 
 ## 二、核心观点分类
 ### 市场趋势判断
-逐条列出，每条标注来源公众号
+逐条列出，每条标注来源
 
 ### 行业分析观点
-逐条展开，包含具体逻辑和数据，标注来源
+逐条展开，含具体逻辑和数据，标注来源
 
 ### 个股推荐/看空
 表格形式：标的 | 方向 | 观点 | 原因 | 来源
 
 ### 操作策略建议
-每条完整语句，包含条件/理由和来源
+每条含条件/理由和来源
 
 ### 风险警示
-每条包含风险点和来源
+每条含风险点和来源
 
 ## 三、共识与分歧
-- 多篇文章共同认可的观点（标注来源）
-- 观点不一致的地方（详细列出各家立场和依据）
-- 核心分析框架的差异
-
-## 原则
-1. **本条铁律**：具体标的（代码）必须全量保留，不许省略
-2. 每条观点标注具体公众号来源，禁止"来源涵盖多家"式模糊
-3. 保留特色观点和独特表述（反共识判断、有趣比喻、极端观点）
-4. 只基于原文，不添加预测
-5. 质量比精简更重要`;
+- 多家共同认可（标注来源）
+- 不一致的立场和依据
+- 核心分歧原因`;
 
 // ═══════════════════════════════════════════════════════════════════
 // Phase 2: AI 观点分析
@@ -600,39 +600,68 @@ export async function analyzeArticles(downloaded) {
     content: readFileSync(f.filePath, 'utf-8').slice(0, 2000),
   }));
 
-  // 🎯 单次 LLM 调用完成全部提取+聚合（0 session 噪音）
-  console.log(`  🎯 全部 ${articles.length} 篇 → 1 次调用`);
+  // 分批提取（14篇/批→4批=4次调用）
+  const BATCH_SIZE = 14;
+  const allResults = [];
 
-  const prompt = [
-    SINGLE_PASS_PROMPT,
-    '',
-    ...articles.flatMap((a, i) => [
-      `--- 文章 ${i+1}/${articles.length}`,
-      `来源: ${a.bizName}`,
-      `标题: ${a.title}`,
-      a.content,
+  for (let b = 0; b < articles.length; b += BATCH_SIZE) {
+    const batch = articles.slice(b, b + BATCH_SIZE);
+    console.log(`  批${Math.floor(b / BATCH_SIZE) + 1}/${Math.ceil(articles.length / BATCH_SIZE)} (${batch.length}篇)`);
+
+    const prompt = [
+      EXTRACT_PROMPT_TEMPLATE,
       '',
-    ]),
-    '',
-    '---',
-    '以上是全部' + articles.length + '篇文章。请先逐篇提取数据点，再按要求输出汇总报告。',
-  ].join('\n');
+      ...batch.flatMap(a => [
+        '---',
+        `## ${a.bizName}`,
+        `### ${a.title}`,
+        a.content,
+        '',
+      ]),
+    ].join('\n');
 
-  let report = '';
-  try {
-    report = await callLlm(prompt);
-    console.log(`  ✅ (${(report.length / 1024).toFixed(1)}KB)`);
-  } catch (e) {
-    console.log(`  ❌ ${e.message}`);
-    return null;
+    try {
+      const result = await callLlm(prompt);
+      allResults.push(result);
+      console.log(`  ✅ (${(result.length / 1024).toFixed(1)}KB)`);
+    } catch (e) {
+      console.log(`  ❌ ${e.message}`);
+    }
+
+    if (b + BATCH_SIZE < articles.length) await sleep(2000);
   }
 
-  if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
-  
-  const rp = join(ANALYSIS_DIR, `${TARGET_DATE}-观点汇总.md`);
-  writeFileSync(rp, report, 'utf-8');
+  if (allResults.length === 0) return null;
 
-  return { reportPath: rp, content: report };
+  // Phase 2b: 合并（1次调用）
+  let report;
+  if (allResults.length <= 1) {
+    report = allResults[0];
+  } else {
+    console.log(`\n🧠  合并 ${allResults.length} 批`);
+    const mergePrompt = MERGE_PROMPT + `\n\n---\n以下是 ${allResults.length} 批提取结果：\n\n` + allResults.join('\n\n---\n\n');
+    try {
+      report = await callLlm(mergePrompt);
+      console.log(`  ✅ (${(report.length / 1024).toFixed(1)}KB)`);
+    } catch (e) {
+      console.log(`  ❌ 合并失败: ${e.message}`);
+      report = allResults.join('\n\n---\n\n');
+    }
+  }
+
+  // Wrap with title
+  const finalReport = [
+    `# 财经观点汇总 — ${TARGET_DATE}`,
+    `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
+    ``,
+    report,
+  ].join('\n\n');
+
+  if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
+  const rp = join(ANALYSIS_DIR, `${TARGET_DATE}-观点汇总.md`);
+  writeFileSync(rp, finalReport, 'utf-8');
+
+  return { reportPath: rp, content: finalReport };
 }
 
 
