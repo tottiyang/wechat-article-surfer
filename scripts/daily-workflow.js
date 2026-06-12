@@ -551,34 +551,83 @@ const GATEWAY_AUTH = {
 
 function callLlm(prompt) {
   return new Promise((resolve, reject) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      controller.abort();
-      reject(new Error('callLlm timeout after 180s'));
-    }, 180000);
+    // 优先使用 Kimi API（速度快、无 session 噪音）
+    const apiKey = process.env.KIMI_API_KEY;
+    if (apiKey) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error('Kimi API timeout after 180s'));
+      }, 180000);
 
-    fetch(`http://127.0.0.1:${GATEWAY_AUTH.port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GATEWAY_AUTH.token}`,
-      },
-      body: JSON.stringify({
-        model: 'openclaw',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 16384,
-      }),
-      signal: controller.signal,
-    })
-      .then(r => r.json())
-      .then(data => {
-        clearTimeout(timeout);
-        resolve(data.choices?.[0]?.message?.content || '');
+      fetch('https://api.moonshot.cn/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'kimi-k2-0711-preview',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 16384,
+          temperature: 0.3,
+        }),
+        signal: controller.signal,
       })
-      .catch(err => {
-        clearTimeout(timeout);
-        reject(err);
-      });
+        .then(r => {
+          if (!r.ok) throw new Error(`Kimi API ${r.status}`);
+          return r.json();
+        })
+        .then(data => {
+          clearTimeout(timeout);
+          const content = data.choices?.[0]?.message?.content || '';
+          if (content) {
+            resolve(content);
+            return;
+          }
+          // 空内容回退到 gateway
+          fallbackToGateway();
+        })
+        .catch(err => {
+          clearTimeout(timeout);
+          console.log(`  ⚠️ Kimi API 失败(${err.message}), 回退到 gateway`);
+          fallbackToGateway();
+        });
+      return;
+    }
+
+    fallbackToGateway();
+
+    function fallbackToGateway() {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error('callLlm timeout after 180s'));
+      }, 180000);
+
+      fetch(`http://127.0.0.1:${GATEWAY_AUTH.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GATEWAY_AUTH.token}`,
+        },
+        body: JSON.stringify({
+          model: 'openclaw',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 16384,
+        }),
+        signal: controller.signal,
+      })
+        .then(r => r.json())
+        .then(data => {
+          clearTimeout(timeout);
+          resolve(data.choices?.[0]?.message?.content || '');
+        })
+        .catch(err => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+    }
   });
 }
 
