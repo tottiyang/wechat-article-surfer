@@ -551,85 +551,49 @@ const GATEWAY_AUTH = {
 
 function callLlm(prompt) {
   return new Promise((resolve, reject) => {
-    // 优先使用 Kimi API（速度快、无 session 噪音）
     const apiKey = process.env.KIMI_API_KEY;
-    if (apiKey) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => {
-        controller.abort();
-        reject(new Error('Kimi API timeout after 180s'));
-      }, 180000);
-
-      // Kimi Code Plan API — Anthropic Messages 格式
-      // 参考: https://api.kimi.com/coding/v1/messages
-      fetch('https://api.kimi.com/coding/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'kimi-for-coding',
-          max_tokens: 16384,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: controller.signal,
-      })
-        .then(r => {
-          if (!r.ok) throw new Error(`Kimi API ${r.status}`);
-          return r.json();
-        })
-        .then(data => {
-          clearTimeout(timeout);
-          const content = data.content?.[0]?.text || '';
-          if (content) {
-            resolve(content);
-            return;
-          }
-          // 空内容回退到 gateway
-          fallbackToGateway();
-        })
-        .catch(err => {
-          clearTimeout(timeout);
-          console.log(`  ⚠️ Kimi API 失败(${err.message}), 回退到 gateway`);
-          fallbackToGateway();
-        });
+    if (!apiKey) {
+      reject(new Error('KIMI_API_KEY not set'));
       return;
     }
 
-    fallbackToGateway();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error('Kimi API timeout after 180s'));
+    }, 180000);
 
-    function fallbackToGateway() {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => {
-        controller.abort();
-        reject(new Error('callLlm timeout after 180s'));
-      }, 180000);
-
-      fetch(`http://127.0.0.1:${GATEWAY_AUTH.port}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${GATEWAY_AUTH.token}`,
-        },
-        body: JSON.stringify({
-          model: 'openclaw',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 16384,
-        }),
-        signal: controller.signal,
+    fetch('https://api.kimi.com/coding/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'kimi-for-coding',
+        max_tokens: 16384,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: controller.signal,
+    })
+      .then(r => {
+        if (!r.ok) throw new Error(`Kimi API ${r.status}`);
+        return r.json();
       })
-        .then(r => r.json())
-        .then(data => {
-          clearTimeout(timeout);
-          resolve(data.choices?.[0]?.message?.content || '');
-        })
-        .catch(err => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-    }
+      .then(data => {
+        clearTimeout(timeout);
+        const content = data.content?.[0]?.text || '';
+        if (content) {
+          resolve(content);
+        } else {
+          reject(new Error('Kimi API returned empty content'));
+        }
+      })
+      .catch(err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
   });
 }
 
