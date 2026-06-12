@@ -12,10 +12,10 @@
  * 用法: node scripts/daily-workflow.js [--date 2026-06-09]
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync, execFileSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -30,9 +30,101 @@ const ANALYSIS_DIR = join(ROOT, '.data', 'analysis');
 const CACHE_DIR = join(ROOT, '.data', 'workflow-cache');
 const IMA_UPLOADER = join(__dirname, 'ima-upload.cjs');
 
-const TARGET_DATE = process.argv.find(a => a.startsWith('--date='))?.split('=')[1]
-  || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-const [YEAR, MONTH] = TARGET_DATE.split('-');
+// ═══════════════════════════════════════════════════════════════════
+// 多日期支持
+// ═══════════════════════════════════════════════════════════════════
+
+// --date=YYYY-MM-DD  : 单个日期（默认昨天）
+// --from-date=YYYY-MM-DD : 起止范围，到 --to-date 或 --date
+// --backlog            : 自动检测未处理的 backlog 日期
+// 默认：昨天（向后兼容）
+
+function parseDateArgs() {
+  const singleDate = process.argv.find(a => a.startsWith('--date='))?.split('=')[1];
+  const fromDate = process.argv.find(a => a.startsWith('--from-date='))?.split('=')[1];
+  const toDate = process.argv.find(a => a.startsWith('--to-date='))?.split('=')[1] || singleDate;
+  const isBacklog = process.argv.includes('--backlog');
+  return { singleDate, fromDate, toDate, isBacklog };
+}
+
+/** 返回 YYYY-MM-DD 字符串数组 */
+function generateDateRange(from, to) {
+  const dates = [];
+  const d = new Date(from);
+  const end = new Date(to);
+  while (d <= end) {
+    dates.push(d.toISOString().slice(0, 10));
+    d.setDate(d.getDate() + 1);
+  }
+  return dates;
+}
+
+/**
+ * 检测未处理的 backlog 日期
+ * 规则：扫描 articles/ 目录，找出已下载文章但尚未完成 AI 分析的日期
+ *       同时包含昨天（cron 正常目标日期）如果它还没处理
+ */
+function detectBacklogDates() {
+  if (!existsSync(ARTICLE_DIR)) return [];
+  const files = readdirSync(ARTICLE_DIR).filter(f => f.endsWith('.md'));
+  
+  // 提取所有日期
+  const dateSet = new Set();
+  for (const f of files) {
+    const m = f.match(/-((2026)-\d{2}-\d{2})-/);
+    if (m) dateSet.add(m[1]);
+  }
+  
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (!dateSet.has(yesterday)) dateSet.add(yesterday);
+  
+  // 过滤出需要处理的日期：有文章但无分析文件
+  const backlog = [];
+  for (const date of [...dateSet].sort()) {
+    const analysisFile = join(ANALYSIS_DIR, `${date}-观点汇总.md`);
+    if (existsSync(analysisFile) && readFileSync(analysisFile, 'utf-8').trim().length > 100) {
+      console.log(`  ⏭️  ${date}: 分析已存在，跳过`);
+      continue;
+    }
+    // 检查是否有文章文件
+    const articleCount = files.filter(f => f.includes(date)).length;
+    if (articleCount > 0 || date === yesterday) {
+      backlog.push({ date, articleCount });
+    }
+  }
+  
+  return backlog.sort();
+}
+
+// 确定本次运行的日期列表
+const dateArgs = parseDateArgs();
+const DATES_TO_PROCESS = (() => {
+  if (dateArgs.isBacklog) {
+    const bl = detectBacklogDates();
+    const dates = bl.map(d => typeof d === 'object' ? d.date : d);
+    console.log(`📋  Backlog 模式: ${dates.length} 个日期待处理: ${dates.join(', ')}`);
+    return dates;
+  }
+  if (dateArgs.fromDate) {
+    const to = dateArgs.toDate || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    return generateDateRange(dateArgs.fromDate, to);
+  }
+  // 单日期模式
+  const d = dateArgs.singleDate || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  return [d];
+})();
+
+// 获取第一天的年月用于目录创建
+const FIRST_DATE = DATES_TO_PROCESS[0];
+if (!FIRST_DATE) {
+  console.log('没有需要处理的日期');
+  process.exit(0);
+}
+
+// 断点续跑：模块级日期变量，供 phase1Partial / publishToWiki 使用
+let TARGET_DATE = FIRST_DATE;
+let YEAR = FIRST_DATE?.split('-')[0] || '';
+let MONTH = FIRST_DATE?.split('-')[1] || '';
 
 // ═══════════════════════════════════════════════════════════════════
 // 工具函数
@@ -466,22 +558,43 @@ const ANALYSIS_PROMPT_TEMPLATE = `你是一位专业的财经文章深度分析�
 // Phase 2: AI 观点分析
 // ═══════════════════════════════════════════════════════════════════
 
+// Direct HTTP call to gateway chat completions API (bypasses slow openclaw infer CLI)
+const GATEWAY_AUTH = {
+  port: JSON.parse(readFileSync(join(process.env.HOME || '~', '.qclaw', 'openclaw.json'), 'utf-8')).gateway.port,
+  token: JSON.parse(readFileSync(join(process.env.HOME || '~', '.qclaw', 'openclaw.json'), 'utf-8')).gateway.auth.token,
+};
+
 function callLlm(prompt) {
-  // execFileSync 避免 shell，直连子进程，解决长中文参数卡死问题
-  const out = execFileSync('openclaw', [
-    'infer', 'model', 'run',
-    '--model', 'qclaw/pool-deepseek-v4-flash',
-    '--prompt', prompt,
-    '--json',
-  ], {
-    encoding: 'utf-8', timeout: 600000,
-    maxBuffer: 10 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error('callLlm timeout after 180s'));
+    }, 180000);
+
+    fetch(`http://127.0.0.1:${GATEWAY_AUTH.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GATEWAY_AUTH.token}`,
+      },
+      body: JSON.stringify({
+        model: 'openclaw',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 8192,
+      }),
+      signal: controller.signal,
+    })
+      .then(r => r.json())
+      .then(data => {
+        clearTimeout(timeout);
+        resolve(data.choices?.[0]?.message?.content || '');
+      })
+      .catch(err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
   });
-  try {
-    const parsed = JSON.parse(out);
-    return parsed.outputs?.[0]?.text || '';
-  } catch { return ''; }
 }
 
 export async function analyzeArticles(downloaded) {
@@ -499,11 +612,11 @@ export async function analyzeArticles(downloaded) {
     bizName: f.bizName,
     title: f.title,
     url: f.url,
-    content: readFileSync(f.filePath, 'utf-8'),
+    content: readFileSync(f.filePath, 'utf-8').slice(0, 2000),
   }));
 
-  // Process in batches of 3 (reduced from 5 to avoid LLM timeout)
-  const BATCH_SIZE = 3;
+  // Process one article per batch for faster response
+  const BATCH_SIZE = 1;
   const allResults = [];
 
   for (let b = 0; b < articles.length; b += BATCH_SIZE) {
@@ -523,7 +636,7 @@ export async function analyzeArticles(downloaded) {
     ].join('\n');
 
     try {
-      const result = callLlm(prompt);
+      const result = await callLlm(prompt);
       allResults.push(result);
       console.log(`  ✅`);
     } catch (e) {
@@ -614,6 +727,15 @@ export async function publishToWiki(reportContent) {
     if (urlMatch) console.log(`  🔗 ${urlMatch[0]}`);
     return out;
   } catch (e) {
+    // feishu-md-publisher 可能在内容写入时因 size 限制失败, 但文档已创建
+    // 从 stdout 中提取 doc_token
+    const stdout = e.stdout || '';
+    const docTokenMatch = stdout.match(/文档创建成功:\s*([a-zA-Z0-9]+)/);
+    if (docTokenMatch) {
+      const docToken = docTokenMatch[1];
+      console.log(`  ⚠️ 内容写入受限，但文档已创建: https://my.feishu.cn/docx/${docToken}`);
+      return { docToken, partial: true };
+    }
     console.error(`  ❌ ${e.stderr?.substring(0, 300) || e.message}`);
     return null;
   }
@@ -623,71 +745,143 @@ export async function publishToWiki(reportContent) {
 // Main
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * 获取构建日期已下载的文章列表
+ */
+function getExistingArticles(date) {
+  if (!existsSync(ARTICLE_DIR)) return [];
+  const files = readdirSync(ARTICLE_DIR).filter(f => f.includes(date) && f.endsWith('.md'));
+  
+  function parseFilename(fname) {
+    const prefix = fname.slice(0, -3);
+    const dateMarker = `-${date}-`;
+    const idx = prefix.indexOf(dateMarker);
+    if (idx === -1) return null;
+    return {
+      bizName: prefix.slice(0, idx),
+      title: prefix.slice(idx + dateMarker.length),
+    };
+  }
+  
+  const sanitize2 = s => s.replace(/[<>:"\/\\|?*]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  
+  return files.map(f => {
+    const parsed = parseFilename(f);
+    return {
+      filePath: join(ARTICLE_DIR, f),
+      bizName: parsed?.bizName || 'unknown',
+      title: parsed?.title || f,
+      imaName: f,
+      url: '',
+    };
+  });
+}
+
+/**
+ * 处理单个日期
+ */
+async function processDate(date) {
+  // 设置模块级日期变量（供 phase1Partial / publishToWiki 使用）
+  TARGET_DATE = date;
+  YEAR = date.split('-')[0];
+  MONTH = date.split('-')[1];
+  
+  console.log('\n' + '═'.repeat(58));
+  console.log(`📅  处理日期: ${date}`);
+  console.log('═'.repeat(58));
+  
+  // 检查已下载的文章
+  const existing = getExistingArticles(date);
+  let downloaded = [];
+  
+  if (existing.length > 0) {
+    console.log(`\n📂  检测到已存 ${existing.length} 篇文章，跳过 Phase 1 下载`);
+    downloaded = existing;
+  } else {
+    // Phase 1: Fetch + Download（分批冷却，防 session 频控）
+    console.log('\n🚀  Phase 1: 文章拉取');
+    const BATCH_SIZE_FETCH = 10;
+    const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
+    const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
+    const allAccounts = await getFakeids();
+    const enabledAccounts = allAccounts.filter(a => a.status === '启用');
+    
+    for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
+      const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
+      const totalBatches = Math.ceil(enabledAccounts.length / BATCH_SIZE_FETCH);
+      console.log(`\n📦  下载批次 ${batchNo}/${totalBatches} (账号 ${batchStart+1}-${Math.min(batchStart+BATCH_SIZE_FETCH, enabledAccounts.length)})`);
+      const p1 = await phase1Partial(enabledAccounts, batchStart, BATCH_SIZE_FETCH);
+      allP1.downloaded.push(...p1.downloaded);
+      allP1.errors.push(...p1.errors);
+      allP1.skipped.push(...p1.skipped);
+      allP1.noArticle.push(...p1.noArticle);
+      // 批次间冷却
+      if (batchStart + BATCH_SIZE_FETCH < enabledAccounts.length) {
+        const coolMin = Math.ceil(COOLDOWN_MS / 60000);
+        console.log(`\n⏳ Session 冷却 ${coolMin}min...（剩余 ${enabledAccounts.length - batchStart - BATCH_SIZE_FETCH} 个账号）`);
+        await sleep(COOLDOWN_MS);
+      }
+    }
+    downloaded = allP1.downloaded;
+    console.log(`\n  已下载: ${downloaded.length} 篇 | 错误: ${allP1.errors.length} | 无文章: ${allP1.noArticle.length}`);
+  }
+  
+  if (downloaded.length === 0) {
+    console.log('\n⏭️  无文章需要处理');
+    return { date, downloaded: 0, analysis: false, wiki: false };
+  }
+  
+  // Phase 1b: IMA Upload
+  console.log('\n📤  Phase 1b: IMA 上传');
+  const p1b = await phase1b(downloaded);
+  console.log(`  ✅ ${p1b.ok} 成功 | ❌ ${p1b.fail} 失败`);
+  
+  // Phase 2: AI Analysis
+  console.log('\n🧠  Phase 2: AI 分析');
+  const analysis = await analyzeArticles(downloaded);
+  
+  // Phase 3: Feishu Wiki publish
+  const publishOk = await publishToWiki(analysis?.content);
+  
+  return {
+    date,
+    downloaded: downloaded.length,
+    analysis: analysis !== null,
+    wiki: publishOk !== null,
+  };
+}
+
 async function main() {
   console.log('╔' + '═'.repeat(58) + '╗');
-  console.log(`║  📰 WeChat 公众号每日工作流`);
-  console.log(`║  日期: ${TARGET_DATE}`);
+  console.log('║  📰 WeChat 公众号工作流 — 多日期模式');
+  console.log('║  ' + new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }));
   console.log('╚' + '═'.repeat(58) + '╝');
-
-  // 0. Session check
+  
+  // Session check
   const { checkSession } = await import(join(ROOT, 'src/proxy.js'));
   const sess = await checkSession();
   if (!sess.valid) { console.error(`❌ ${sess.message}`); process.exit(1); }
   console.log(`🔑  ${sess.message}\n`);
-
-  // 1. Read all accounts with fakeids
-  console.log('📖  读取公众号列表...');
-  const allAccounts = await getFakeids();
-  console.log(`  共 ${allAccounts.length} 个公众号\n`);
-
-  // Phase 1: Fetch + Download（分批冷却，防 session 频控）
-  console.log('🚀  Phase 1: 文章拉取');
-  const BATCH_SIZE_FETCH = 10;
-  const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
-  const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
-  const enabledAccounts = allAccounts.filter(a => a.status === '启用');
-  for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
-    const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
-    const totalBatches = Math.ceil(enabledAccounts.length / BATCH_SIZE_FETCH);
-    console.log(`\n📦  下载批次 ${batchNo}/${totalBatches} (账号 ${batchStart+1}-${Math.min(batchStart+BATCH_SIZE_FETCH, enabledAccounts.length)})`);
-    const p1 = await phase1Partial(enabledAccounts, batchStart, BATCH_SIZE_FETCH);
-    allP1.downloaded.push(...p1.downloaded);
-    allP1.errors.push(...p1.errors);
-    allP1.skipped.push(...p1.skipped);
-    allP1.noArticle.push(...p1.noArticle);
-    // 结束页后冷却（让 session 恢复）
-    if (batchStart + BATCH_SIZE_FETCH < enabledAccounts.length) {
-      const coolMin = Math.ceil(COOLDOWN_MS / 60000);
-      console.log(`\n⏳ Session 冷却 ${coolMin}min...（剩余 ${enabledAccounts.length - batchStart - BATCH_SIZE_FETCH} 个账号）`);
-      await sleep(COOLDOWN_MS);
-    }
+  
+  console.log(`📋  目标日期: ${DATES_TO_PROCESS.join(', ')}`);
+  
+  // 逐个日期处理
+  const results = [];
+  for (let i = 0; i < DATES_TO_PROCESS.length; i++) {
+    const date = DATES_TO_PROCESS[i];
+    const r = await processDate(date);
+    results.push(r);
+    // 日期间冷却（10秒足够）
+    if (i < DATES_TO_PROCESS.length - 1) await sleep(10000);
   }
-  const p1 = allP1;
-  console.log(`\n  已下载: ${p1.downloaded.length} 篇 | 错误: ${p1.errors.length} | 无文章: ${p1.noArticle.length}`);
-
-  // Phase 1b: IMA Upload
-  if (p1.downloaded.length > 0) {
-    console.log('\n📤  Phase 1b: IMA 上传');
-    const p1b = await phase1b(p1.downloaded);
-    console.log(`  ✅ ${p1b.ok} 成功 | ❌ ${p1b.fail} 失败`);
-  }
-
-  // Phase 2: AI Analysis
-  console.log('\n🧠  Phase 2: AI 分析');
-  const analysis = await analyzeArticles(p1.downloaded);
-
-  // Phase 3: Feishu Wiki publish
-  const publishOk = await publishToWiki(analysis?.content);
-
-  // Summary
+  
+  // 汇总
   console.log('\n' + '═'.repeat(58));
-  console.log('🎯  完成');
-  console.log(`  日期: ${TARGET_DATE}`);
-  console.log(`  下载: ${p1.downloaded.length} 篇`);
-  console.log(`  分析: ${analysis ? '✅' : '⏭️'}`);
-  console.log(`  飞书: ${publishOk ? '✅' : '⏭️'}`);
-  console.log(`  频控: 公众号间隔 ${FREQ.ACCOUNT_DELAY_MIN}-${FREQ.ACCOUNT_DELAY_MAX}s`);
-  console.log(`  批次: ${FREQ.BATCH_SIZE} 个/批, 批次间隔 ${FREQ.BATCH_PAUSE_MIN}-${FREQ.BATCH_PAUSE_MAX}s`);
+  console.log('🎯  全部完成');
+  console.log('═'.repeat(58));
+  for (const r of results) {
+    console.log(`  📅 ${r.date}: 下载 ${r.downloaded} 篇`);
+  }
   console.log('═'.repeat(58));
 }
 
