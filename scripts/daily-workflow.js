@@ -486,32 +486,49 @@ async function phase1b(downloaded) {
 // ═══════════════════════════════════════════════════════════════════
 
 // 逐篇提取提示词（每批批量提取）
-const EXTRACT_PROMPT_TEMPLATE = `从以下财经公众号文章中提取关键数据点。输出格式严格按以下字段，每个字段一行，不要添加原文没有的内容。
+const EXTRACT_PROMPT_TEMPLATE = `你是一位专业的财经数据提取员。从以下文章中提取关键投资信息。
+
+## 输出格式（严格遵循，不要添加任何额外叙述）
+
+对每篇文章，输出以下字段，每行一个字段，格式为"字段名: 内容"：
 
 来源: <公众号名> — <文章标题>
-板块/行业: <涉及的具体板块、行业、概念>
-具体标的: <明确提到的股票/ETF/转债名称和代码>
-市场判断: <对大盘/板块的判断>
-核心观点: <关键逻辑，2-3句话概述，包含具体数据>
+板块/行业: <涉及的具体板块、行业、概念，多个用逗号分隔>
+具体标的: <明确提到的股票/ETF/转债名称和代码，多个用逗号分隔>
+市场判断: <对大盘/板块的判断，1-2句话>
+核心观点: <关键逻辑、定性观点、情绪判断、市场观察、案例对比。如有具体数据必须附上。无则写"无">
 操作建议: <推荐的操作和条件>
 风险提示: <提示的风险点>
 
-如果某项数据原文未提及，写"无"。`;
+## 重要规则
+
+1. 如果某项数据原文确实未提及，写"无"
+2. 允许提取定性观点、情绪判断、市场观察，不要只认数字
+3. 叙事类内容（案例、段子、对比）也是信息，提取其反映的市场情绪或观点
+4. 不要添加"文章一/二/三"等编号
+5. 不要添加"我来提取"等自说自话
+6. 不要添加任何markdown标题（如###）
+7. 只输出字段行，每行格式必须是"字段名: 内容"
+8. 文章之间用"---"分隔
+9. 如果文章不是财经内容（如电影评论、纯数据记录），所有字段写"无"，并在来源后标注"[非财经]"`;
 
 // 跨批次聚合提示词（1次调用合并所有提取结果）
 const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多篇财经公众文章的分析结果。请将它们合并成一份扎实的每日市场总结。
 
 ## 合并铁律
 
-### 📋 铁律一：具体标的全量保留
-所有文章提及的股票/ETF/转债/期货品种，**一个都不能少**。
-格式：**[标的名称（代码）] 方向: 观点 (来源)**
+### 铁律一：具体标的全量保留
+所有文章提及的股票/ETF/转债/期货品种，一个都不能少。
+格式：[标的名称（代码）] 方向: 观点 (来源)
 
-### 📰 铁律二：每条观点标注具体来源公众号
+### 铁律二：每条观点标注具体来源公众号
 禁止用"来源涵盖多家公众号"式模糊表述
 
-### 💎 铁律三：保留特色观点
+### 铁律三：保留特色观点
 保留反共识判断、有趣比喻、极端观点、独特分析框架
+
+### 铁律四：过滤非财经内容
+如果某篇文章标注[非财经]，直接跳过不纳入汇总
 
 ### 输出格式
 
@@ -607,16 +624,16 @@ export async function analyzeArticles(downloaded) {
 
   console.log(`\n🧠  AI 分析 ${downloaded.length} 篇`);
 
-  // Read all articles
+  // Read all articles (increase content length for better extraction)
   const articles = downloaded.map(f => ({
     bizName: f.bizName,
     title: f.title,
     url: f.url,
-    content: readFileSync(f.filePath, 'utf-8').slice(0, 2000),
+    content: readFileSync(f.filePath, 'utf-8').slice(0, 4000),
   }));
 
-  // 分批提取（14篇/批→4批=4次调用）
-  const BATCH_SIZE = 14;
+  // 分批提取（10篇/批→6批=6次调用，减少超时风险）
+  const BATCH_SIZE = 10;
   const allResults = [];
 
   for (let b = 0; b < articles.length; b += BATCH_SIZE) {
@@ -628,8 +645,8 @@ export async function analyzeArticles(downloaded) {
       '',
       ...batch.flatMap(a => [
         '---',
-        `## ${a.bizName}`,
-        `### ${a.title}`,
+        `公众号: ${a.bizName}`,
+        `标题: ${a.title}`,
         a.content,
         '',
       ]),
@@ -651,12 +668,26 @@ export async function analyzeArticles(downloaded) {
   // Phase 2b: 直接串联各批提取结果（跳过LLM合并，保留完整细节）
   // 之前的实践表明LLM合并阶段会被过度精简→丢失具体标的和特色观点
   console.log(`\n📎  串联 ${allResults.length} 批提取结果（跳过LLM合并，保留完整细节）`);
+  
+  // 清理每批结果中的LLM自说自话和格式问题
+  const cleanedResults = allResults.map(r => {
+    // 去除常见的LLM自说自话前缀
+    let cleaned = r
+      .replace(/^我来(逐一)?提取.*\n?/gi, '')
+      .replace(/^以下是.*\n?/gi, '')
+      .replace(/^开始(分析|提取).*\n?/gi, '')
+      .replace(/^好的[，,].*\n?/gi, '')
+      .trim();
+    return cleaned;
+  });
+  
   const concatReport = [
     `# 财经观点汇总 — ${TARGET_DATE}`,
     `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
     `> 共分析 ${downloaded.length} 篇文章`,
+    `> 提取批次：${allResults.length}/${Math.ceil(articles.length / BATCH_SIZE)}`,
     ``,
-    ...allResults.flatMap((r, i) => [
+    ...cleanedResults.flatMap((r, i) => [
       `---\n## 第 ${i+1} 组 (${Math.min(BATCH_SIZE, articles.length - i * BATCH_SIZE)} 篇)\n`,
       r,
     ]),
@@ -809,20 +840,34 @@ async function processDate(date) {
     console.log(`\n📂  检测到已存 ${existing.length} 篇文章，跳过 Phase 1 下载`);
     downloaded = existing;
   } else {
-    // Phase 1: Fetch + Download（分批冷却，防 session 频控 + 断点恢复）
-    // 断点恢复策略：先查 E 列（lastResult），只处理需要重试的账号
-    // SUCCESS/NO_ARTICLE → 已成功，跳过
-    // FREQ_CONTROL/API_ERROR/DOWNLOAD_ERROR → 需要重试
-    // PENDING/空 → 从未拉取过，需要处理
-    console.log('\n🚀  Phase 1: 文章拉取（断点恢复）');
+    // Phase 1: Fetch + Download
+    // 策略：新日期（无已有文章）→ 全量下载所有启用账号
+    //       backlog 恢复（有已有文章但分析缺失）→ 仅重试失败账号
     const BATCH_SIZE_FETCH = 10;
     const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
     const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
     const allAccounts = await getFakeids();
-    const needRetryAccounts = allAccounts.filter(a => needRetry(a));
-    const enabledAccounts = needRetryAccounts.filter(a => a.status === '启用');
-    if (enabledAccounts.length < allAccounts.filter(a => a.status === '启用').length) {
-      console.log(`  📋  断点恢复: 跳过 ${allAccounts.filter(a => a.status === '启用').length - enabledAccounts.length} 个已成功账号`);
+    
+    // 判断：是全新日期（之前从未下载过该日文章）还是 backlog 恢复
+    const isNewDate = existing.length === 0;
+    
+    let enabledAccounts;
+    if (isNewDate) {
+      // 全新日期：下载所有启用账号，无论上次结果如何
+      console.log('\n🚀  Phase 1: 全量拉取（新日期）');
+      enabledAccounts = allAccounts.filter(a => a.status === '启用');
+    } else {
+      // Backlog 恢复：只重试上次失败的账号
+      console.log('\n🚀  Phase 1: 文章拉取（断点恢复）');
+      console.log('  策略：先查 E 列（lastResult），只处理需要重试的账号');
+      console.log('  SUCCESS/NO_ARTICLE → 已成功，跳过');
+      console.log('  FREQ_CONTROL/API_ERROR/DOWNLOAD_ERROR → 需要重试');
+      console.log('  PENDING/空 → 从未拉取过，需要处理');
+      const needRetryAccounts = allAccounts.filter(a => needRetry(a));
+      enabledAccounts = needRetryAccounts.filter(a => a.status === '启用');
+      if (enabledAccounts.length < allAccounts.filter(a => a.status === '启用').length) {
+        console.log(`  📋  跳过 ${allAccounts.filter(a => a.status === '启用').length - enabledAccounts.length} 个已成功账号`);
+      }
     }
     
     for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
@@ -843,6 +888,7 @@ async function processDate(date) {
     }
     downloaded = allP1.downloaded;
     console.log(`\n  已下载: ${downloaded.length} 篇 | 错误: ${allP1.errors.length} | 无文章: ${allP1.noArticle.length}`);
+    console.log(`  处理模式: ${isNewDate ? '新日期全量' : '断点恢复'}`);
   }
   
   if (downloaded.length === 0) {
