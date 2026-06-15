@@ -21,7 +21,7 @@ const ROOT = join(__dirname, '..');
 
 // ═══════════════════════════════════════════════════════════════════
 // 命名规范（硬编码）
-// 文件名：{公众号名}_{YYYY-MM-DD}_{原标题}.md
+// 文件名：{公众号名}-{YYYY-MM-DD}-{原标题}.md
 // ═══════════════════════════════════════════════════════════════════
 
 const ARTICLE_DIR = join(ROOT, '.data', 'articles');
@@ -37,7 +37,7 @@ function sanitizeFilename(name) {
 function makeArticleFilename(bizName, pubDate, title) {
   const safeName = sanitizeFilename(bizName);
   const safeTitle = sanitizeFilename(title);
-  return `${safeName}_${pubDate}_${safeTitle}.md`;
+  return `${safeName}-${pubDate}-${safeTitle}.md`;
 }
 
 // ── 读取配置 ──────────────────────────────────────────────────────────

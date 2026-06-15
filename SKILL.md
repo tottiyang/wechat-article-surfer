@@ -288,40 +288,24 @@ openclaw cron add --message "立即执行公众号文章抓取分析" --no-cron
 
 ## 执行流程（Agent 执行路径）
 
-当 cron 触发或用户手动请求时，按以下步骤执行：
+当 cron（每日 02:00）触发时，直接运行 `daily-workflow.js --backlog`：
 
-### Step 0: 检查登录状态
 ```bash
 cd {managed_skill_dir}/wechat-article-surfer
-node src/cli.js status
+node scripts/daily-workflow.js --backlog
 ```
-- 有有效会话 → 继续
-- 无有效会话 → 通知用户重新扫码登录 (`node src/cli.js login`)
 
-### Step 1: 搜索公众号
+`--backlog` 模式自动检测所有未完成的日期并逐个执行，每个日期独立完成完整 Phase。
+
+### 手动触发
+
 ```bash
-node src/cli.js search "公众号名称"
+# 指定日期
+node scripts/daily-workflow.js --date 2026-06-15
+
+# 手动检查 session
+node scripts/check_session.js
 ```
-获取目标公众号的 `fakeid`。
-
-### Step 2: 获取文章列表
-分页拉取（每次 10 条），直到覆盖前一日所有文章。
-
-### Step 3: 批量下载文章
-```bash
-node src/cli.js dump <fakeid> <article_count>
-```
-自动下载为 Markdown 文件，保存到 `.data/articles/`。
-
-### Step 4: AI 分析
-读取 `.data/articles/` 中当日的文件，提取观点/标的/原因，生成聚合分析报告。
-
-### Step 5: 存入 IMA
-- 将每篇文章的 Markdown 上传到 IMA 知识库
-- 将聚合分析报告也存入 IMA
-
-### Step 6: 推送结果
-发送结果摘要给用户。
 
 ---
 
@@ -353,11 +337,13 @@ node src/cli.js dump <fakeid> <article_count>
 │   ├── cookie-store.js      # Cookie持久化
 │   └── cli.js               # 命令行工具
 ├── scripts/                 # 业务脚本
-│   ├── daily-workflow.js    # 每日工作流（全自动）
+│   ├── daily-workflow.js    # 每日工作流（全自动，唯一入口）
 │   ├── ima-upload.cjs       # IMA上传助手
+│   ├── check_session.js     # 微信 session 检查
+│   ├── generate-summary-prompt.js  # AI分析提示词生成器
 │   ├── fix-fakeids.js       # FakeId修复
 │   ├── search_batch.js      # 批量搜索
-│   └── fetch-daily-articles.js  # 旧版拉取脚本
+│   └── fetch-daily-articles.js  # 旧版拉取脚本（保留仅供参考）
 ├── bin/                     # 可执行脚本
 │   └── start-login.sh       # 一键启动登录
 └── .data/                   # 运行时数据（不提交 git）
@@ -515,12 +501,15 @@ if (skipped.length > 0) {
 
 **彻底解决**：在 `daily-workflow.js` 中将 KIMI_API_KEY 写入 config.json 或 .env 文件，不走环境变量。
 
-### Bug 3: 文章命名双下划线 (2026-06-15)
+### Bug 3: 文章命名双下划线 (2026-06-15，已修复)
 
-**症状**：`fetch-daily-articles.js` 使用 `{名}_{日期}_{标题}.md`（下划线），`daily-workflow.js` 使用 `{名}-{日期}-{标题}.md`（连字符）。两者文件名不一致，互不识别。
+**症状**：`fetch-daily-articles.js` 使用 `{名}_{日期}_{标题}.md`（下划线），`daily-workflow.js` 使用 `{名}-{日期}-{标题}.md`（连字符）。两者文件名不一致，`daily-workflow.js` 的 `parseFilename()` 无法解析下划线命名的文件（`bizName` 降级为 `'unknown'`）。
 
-**影响**：
-- `getExistingArticles()` 用文件包含日期来查找，两种命名都能找到
-- 但 duplicate 去重可能失效
+**修复**（2026-06-15 v2）：
+- `fetch-daily-articles.js` 的命名函数 `makeArticleFilename()` 改为使用连字符
+- 磁盘上 7 个已存在的下划线文件已重命名为连字符格式
+- 废弃脚本 `batch-analyze.js`, `batch-analyze-all.js`, `analyze-publish.js` 已删除
+
+**统一命名规范**：所有文章文件名统一使用连字符：`{公众号名}-{YYYY-MM-DD}-{标题}.md`
 
 
