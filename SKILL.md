@@ -427,10 +427,91 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 
 ---
 
-## 限制与注意事项
+## 📊 拉取状态（2026-06-15 更新）
 
-1. ⚠️ **登录会话有效期 4 天**：WeChat 登录会话 4 天后过期，需重新扫码
-2. ⚠️ **本地部署**：需要 Node.js 22+，依赖仅 turndown + cheerio（17 packages）
-3. ⚠️ **IMA 不能新建文件夹**：目标文件夹需先在 IMA 桌面端手动创建
-4. ⚠️ **搜索不到的情况**：少数公众号关闭了搜索功能，无法抓取
-5. ⚠️ **文章数量限制**：单次最多返回 10 篇文章，可调整 size 参数
+电子表格 E 列记录了每个公众号的拉取时间、结果。当前 68 个启用账号：
+
+### 最近拉取覆盖情况
+
+| 日期 | 已拉取账号数 | 文章数 | 备注 |
+|------|-------------|--------|------|
+| 2026-06-09 周二 | 68 | ~50篇 | ✅ 已分析+发布 |
+| 2026-06-10 周三 | 68 | ~50篇 | ✅ 已分析+发布 |
+| 2026-06-11 周四 | 68 | ~50篇 | ✅ 已分析+发布 |
+| 2026-06-12 周五 | 68 | ~50篇 | 已拉取，未分析日志 |
+| 2026-06-14 周日 | ⚠️ 10/68 | 4篇 | 被 bug 截断（见下） |
+| 2026-06-15 周一 | — | — | 待处理 |
+
+**说明**：6/14 周日只有前 10 个公众号被拉取（3个有文章=4篇），剩余 58 个因代码 bug 被跳过。6/15 周一尚未开始拉取。
+
+## 配置说明
+
+### config.json 关键字段
+
+```json
+{
+  "feishu": { ... },          // 飞书表格/知识库配置
+  "wechat": { ... },          // 微信 cookies 路径
+  "ima": { ... },             // IMA 知识库配置
+  "article_storage": ".data/articles",
+  "kimi": {
+    "api_key": "sk-kimi-..."  // Kimi API Key（解决 cron 子进程不加载 ~/.zshrc 的问题）
+  }
+}
+```
+
+**注意**：KIMI_API_KEY 除了在 `~/.zshrc` 中，也写入了 `config.json` 的 `kimi.api_key` 字段。
+`callLlm()` 会优先从 `process.env.KIMI_API_KEY` 读取，fallback 到 `config.json`。
+
+## 🐛 已知 Bug 与踩坑记录
+
+### Bug 1: backlog 模式 Phase 1 被 existing.length > 0 跳过 (2026-06-15)
+
+**修复 commit**: (每日工作流同目录)
+
+**症状**：cron 第1批下载了4篇文章后，第2批开始前碰了 10 分钟冷却，之后进程恢复时发现已有文章 → 跳过了 Phase 1 → 剩余 58 个账号从未拉取。
+
+**根因**：`daily-workflow.js` 第836行逻辑：
+```javascript
+if (existing.length > 0) {
+    // ❌ backlog 模式下直接跳过了剩余账号的拉取
+    downloaded = existing;
+}
+```
+
+同时第 845-869 行的 backlog 恢复模式调用了 `needRetry()`，该函数检查 E 列的上次拉取结果：
+```javascript
+function needRetry(account) {
+  if (!account.lastResult || account.lastResult === '待处理') return true;
+  const result = account.lastResult.split('|')[1];
+  return ['频控限制','API错误','下载失败'].includes(result);
+  // ❌ "成功"和"无文章"都返回 false
+  // 但 "成功" 是针对旧日期的，不是新日期
+}
+```
+
+**修复**（2026-06-15）：在 backlog 模式下强制 `isNewDate = true`，全量拉取
+```javascript
+const isBacklogMode = process.argv.includes('--backlog');
+const isNewDate = existing.length === 0 || isBacklogMode;
+```
+
+### Bug 2: KIMI_API_KEY 在 cron 子进程中丢失 (2026-06-15)
+
+**症状**：AI 分析失败报 `KIMI_API_KEY not set`
+
+**根因**：API Key 定义在 `~/.zshrc` 中，cron 启动的子进程不加载 shell profile
+
+**临时解决**：在 exec 前 source ~/.zshrc
+
+**彻底解决**：在 `daily-workflow.js` 中将 KIMI_API_KEY 写入 config.json 或 .env 文件，不走环境变量。
+
+### Bug 3: 文章命名双下划线 (2026-06-15)
+
+**症状**：`fetch-daily-articles.js` 使用 `{名}_{日期}_{标题}.md`（下划线），`daily-workflow.js` 使用 `{名}-{日期}-{标题}.md`（连字符）。两者文件名不一致，互不识别。
+
+**影响**：
+- `getExistingArticles()` 用文件包含日期来查找，两种命名都能找到
+- 但 duplicate 去重可能失效
+
+

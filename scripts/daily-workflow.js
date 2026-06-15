@@ -568,7 +568,16 @@ const GATEWAY_AUTH = {
 
 function callLlm(prompt) {
   return new Promise((resolve, reject) => {
-    const apiKey = process.env.KIMI_API_KEY;
+    // 🔧 优先从环境变量读，如果没有则从 config.json 读（解决 cron 子进程不加载 ~/.zshrc 的问题）
+    let apiKey = process.env.KIMI_API_KEY;
+    if (!apiKey) {
+      try {
+        const cfg = JSON.parse(readFileSync(join(ROOT, 'config.json'), 'utf-8'));
+        apiKey = cfg.kimi?.api_key;
+      } catch (e) {
+        // ignore
+      }
+    }
     if (!apiKey) {
       reject(new Error('KIMI_API_KEY not set'));
       return;
@@ -836,10 +845,17 @@ async function processDate(date) {
   const existing = getExistingArticles(date);
   let downloaded = [];
   
-  if (existing.length > 0) {
+  // 🔧 FIX: backlog 模式下，即使已有下载文章也重新拉取所有账号
+  // 原有逻辑：existing.length > 0 直接跳过 Phase 1 → 导致第一次 batch 后剩余账号被忽略
+  const skipDownload = existing.length > 0 && !process.argv.includes('--backlog');
+  
+  if (skipDownload) {
     console.log(`\n📂  检测到已存 ${existing.length} 篇文章，跳过 Phase 1 下载`);
     downloaded = existing;
   } else {
+    if (existing.length > 0) {
+      console.log(`\n📂  拥有 ${existing.length} 篇已有文章，backlog 模式继续拉取剩余账号`);
+    }
     // Phase 1: Fetch + Download
     // 策略：新日期（无已有文章）→ 全量下载所有启用账号
     //       backlog 恢复（有已有文章但分析缺失）→ 仅重试失败账号
@@ -849,7 +865,9 @@ async function processDate(date) {
     const allAccounts = await getFakeids();
     
     // 判断：是全新日期（之前从未下载过该日文章）还是 backlog 恢复
-    const isNewDate = existing.length === 0;
+    // 🔧 FIX: backlog 模式下强制全量拉取所有账号（prev result 来自旧日期，不能用于判断新日期是否需要拉取）
+    const isBacklogMode = process.argv.includes('--backlog');
+    const isNewDate = existing.length === 0 || isBacklogMode;
     
     let enabledAccounts;
     if (isNewDate) {
