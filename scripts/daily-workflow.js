@@ -135,6 +135,17 @@ const imaName = (biz, title) => `${sanitize(biz)}-${TARGET_DATE}-${sanitize(titl
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function now() { return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-'); }
 
+/** 从本地文件 YAML front matter 中读取 URL */
+function readArticleUrl(filePath) {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const m = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!m) return '';
+    const urlLine = m[1].split('\n').find(l => l.startsWith('url:'));
+    return urlLine ? urlLine.slice(4).trim() : '';
+  } catch { return ''; }
+}
+
 function getFeishuToken() {
   const f = CONFIG.feishu.token_file.replace(/^~/, process.env.HOME || '');
   const t = JSON.parse(readFileSync(f, 'utf-8'));
@@ -460,7 +471,8 @@ export async function phase1Partial(accounts, startIdx = 0, count = 10) {
         try {
           const html = await downloadArticle(a.link);
           const md = htmlToMarkdown(html, title);
-          writeFileSync(localPath, md, 'utf-8');
+          const frontMatter = `---\nurl: ${a.link}\nbiz: ${name}\ntitle: ${title}\ndate: ${TARGET_DATE}\n---\n\n`;
+          writeFileSync(localPath, frontMatter + md, 'utf-8');
           results.downloaded.push({ filePath: localPath, bizName: name, title, url: a.link, imaName: fname });
           console.log(`  ✅ ${fname}`);
           await sleep(800);
@@ -659,7 +671,7 @@ function callLlm(prompt) {
 // ═══════════════════════════════════════════════════════════════════
 
 /** 解析单篇文章的字段提取结果 */
-function parseArticleFields(text) {
+export function parseArticleFields(text) {
   const fields = {};
   const lines = text.split('\n');
   let currentKey = null, currentVal = [];
@@ -695,7 +707,7 @@ function parseArticleFields(text) {
 }
 
 /** 解析全部批次的提取结果 */
-function parseAllArticles(rawText) {
+export function parseAllArticles(rawText) {
   // 按 --- 分割每个公众号的提取
   const blocks = rawText.split(/\n---\s*\n/);
   const articles = [];
@@ -709,7 +721,7 @@ function parseAllArticles(rawText) {
 }
 
 /** 构建结构化汇总报告 */
-function buildStructuredReport(articles, targetDate, totalCount) {
+export function buildStructuredReport(articles, targetDate, totalCount) {
   const hasContent = a => !a.isEmpty && !a.isNonFinance;
   const valid = articles.filter(hasContent);
   
@@ -845,7 +857,12 @@ function buildStructuredReport(articles, targetDate, totalCount) {
   lines.push('');
   for (const a of articles) {
     const tag = a.isNonFinance ? ' [非财经]' : a.isEmpty ? ' [无有效提取]' : '';
-    lines.push(`- **${a.source}** — ${a.title}${tag}`);
+    const url = a.url || '';
+    if (url) {
+      lines.push(`- **${a.source}** — [${a.title}](${url})${tag}`);
+    } else {
+      lines.push(`- **${a.source}** — ${a.title}${tag}`);
+    }
   }
   
   return lines.join('\n');
@@ -919,8 +936,21 @@ export async function analyzeArticles(downloaded) {
     return cleaned;
   });
   
+  // 构建 (bizName, title) → url 映射
+  const urlMap = new Map();
+  for (const d of downloaded) {
+    const key = `${d.bizName}|${d.title}`;
+    urlMap.set(key, d.url || '');
+  }
+
   // Phase 2b: 确定性聚合（解析字段 → 结构化报告）
   const articlesParsed = parseAllArticles(cleanedResults.join('\n\n'));
+  for (const a of articlesParsed) {
+    const key = `${a.source}|${a.title}`;
+    if (urlMap.has(key)) {
+      a.url = urlMap.get(key);
+    }
+  }
   const structuredReport = buildStructuredReport(articlesParsed, TARGET_DATE, downloaded.length);
 
   if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
@@ -1038,13 +1068,15 @@ function getExistingArticles(date) {
   const sanitize2 = s => s.replace(/[<>:"\/\\|?*]/g, '').replace(/\s+/g, ' ').trim().slice(0, 100);
   
   return files.map(f => {
+    const fp = join(ARTICLE_DIR, f);
     const parsed = parseFilename(f);
+    const url = readArticleUrl(fp);
     return {
-      filePath: join(ARTICLE_DIR, f),
+      filePath: fp,
       bizName: parsed?.bizName || 'unknown',
       title: parsed?.title || f,
       imaName: f,
-      url: '',
+      url,
     };
   });
 }
