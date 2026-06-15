@@ -31,7 +31,7 @@ metadata:
 ```mermaid
 flowchart TD
     A[Cron: 每日02:00触发] --> B[读取公众号配置]
-    B --> C[调用WX-Exporter API搜索公众号]
+    B --> C[调用微信 MP API搜索公众号]
     C --> D[获取文章列表]
     D --> E[按日期过滤: 前一日文章]
     E --> F[逐篇下载为Markdown]
@@ -381,25 +381,44 @@ node scripts/check_session.js
 | 手动模式 | 账号状态为手动 | 否 |
 | 待处理 | 从未拉取过 | **是** |
 
-### 补跑逻辑
+### 补跑逻辑（日期感知，v2）
 
 ```javascript
 // 需要补跑的结果类型
 const NEED_RETRY = ['频控限制', 'API错误', '下载失败'];
 
 // 判断是否需要补跑
-function needRetry(account) {
+function needRetry(account, targetDate) {
   if (account.status !== '启用') return false;
-  if (!account.lastResult) return true;
-  const result = account.lastResult.split('|')[1];
+  if (!account.lastResult || account.lastResult === '待处理') return true;
+
+  const parts = account.lastResult.split('|');
+  const ts = parts[0];          // 时间戳
+  const result = parts[1] || parts[0];
+
+  // 日期感知：检查 E 列结果的日期是否等于目标日期
+  if (targetDate) {
+    const tsDate = parseTimestampDate(ts);
+    if (tsDate && tsDate !== targetDate) return true;  // 旧日期 → 当天未处理
+  }
+
   return NEED_RETRY.includes(result);
+}
+
+// 辅助：从 E 列时间戳解析日期
+function parseTimestampDate(ts) {
+  if (!ts || typeof ts !== 'string') return null;
+  const m = ts.match(/(\\d{4})\\/(\\d{1,2})\\/(\\d{1,2})/);
+  if (!m) return null;
+  return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
 }
 ```
 
-补跑策略：
-- **只补** 频控限制/API错误/下载失败/待处理
-- **不补** 无文章/已禁用/手动模式/参数无效
-- 参数无效需人工修复 fakeid
+补跑策略（v2）：
+- **日期感知**：额外检查 E 列结果日期，旧日期结果视为当天未处理
+- **只补** 频控限制/API错误/下载失败/待处理（且当天未处理）
+- **不补** 无文章/已禁用/手动模式/参数无效（当天已处理）
+- **跨天恢复**：中断后次日重跑，旧日期结果全部视为待处理
 
 ### 结果格式
 
