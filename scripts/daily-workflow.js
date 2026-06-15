@@ -292,22 +292,53 @@ function shuffle(arr) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * 判断账号是否需要补跑
+ * 解析 E 列时间戳中的日期
+ * E 列格式: "2026/6/15 18:58:00|成功|4篇"
+ * @param {string} ts - 时间戳字符串
+ * @returns {string|null} - "YYYY-MM-DD" 格式，解析失败返回 null
+ */
+function parseTimestampDate(ts) {
+  if (!ts) return null;
+  const m = ts.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (!m) return null;
+  const mo = m[2].padStart(2, '0');
+  const d = m[3].padStart(2, '0');
+  return `${m[1]}-${mo}-${d}`;
+}
+
+/**
+ * 判断账号是否需要补跑（日期感知）
+ * 
+ * E 列记录的是某次拉取的结果，但那个结果可能来自旧日期。
+ * 例：账号A 6/12 拉过但 6/15 没拉过，E 列显示 "2026/6/12 09:00|无文章"
+ * 此时对 6/15 而言，该账号是"从未拉取"状态，不能因为 6/12 没文章就推断 6/15 也没文章。
+ * 
  * @param {Object} account - 账号信息
+ * @param {string} [targetDate] - 目标日期 "YYYY-MM-DD"，不传时保持旧行为
  * @returns {boolean} - 是否需要补跑
  */
-function needRetry(account) {
+function needRetry(account, targetDate) {
   // 非启用状态不补跑
   if (account.status !== '启用') return false;
   
   // 从未拉取过，需要补跑
   if (!account.lastResult || account.lastResult === FETCH_RESULT.PENDING) return true;
   
-  // 解析最后拉取结果
+  // 解析：E 列格式为 "2026/6/15 18:58:00|成功|4篇"
   const parts = account.lastResult.split('|');
+  const ts = parts[0];
   const result = parts[1] || parts[0];
   
-  // 只有特定错误需要补跑
+  // 日期感知：检查结果日期是否等于目标日期
+  if (targetDate) {
+    const tsDate = parseTimestampDate(ts);
+    if (tsDate && tsDate !== targetDate) {
+      // 结果是旧日期的，对当前目标日期来说该账号未处理
+      return true;
+    }
+  }
+  
+  // 只有特定错误需要重试
   return NEED_RETRY.includes(result);
 }
 
@@ -843,70 +874,59 @@ async function processDate(date) {
   
   // 检查已下载的文章
   const existing = getExistingArticles(date);
-  let downloaded = [];
+  let downloaded = existing.length > 0 ? [...existing] : [];
   
-  // 🔧 FIX: backlog 模式下，即使已有下载文章也重新拉取所有账号
-  // 原有逻辑：existing.length > 0 直接跳过 Phase 1 → 导致第一次 batch 后剩余账号被忽略
-  const skipDownload = existing.length > 0 && !process.argv.includes('--backlog');
-  
-  if (skipDownload) {
-    console.log(`\n📂  检测到已存 ${existing.length} 篇文章，跳过 Phase 1 下载`);
-    downloaded = existing;
-  } else {
-    if (existing.length > 0) {
-      console.log(`\n📂  拥有 ${existing.length} 篇已有文章，backlog 模式继续拉取剩余账号`);
-    }
-    // Phase 1: Fetch + Download
-    // 策略：新日期（无已有文章）→ 全量下载所有启用账号
-    //       backlog 恢复（有已有文章但分析缺失）→ 仅重试失败账号
-    const BATCH_SIZE_FETCH = 10;
-    const COOLDOWN_MS = 10 * 60 * 1000; // 10 分钟 session 冷却
-    const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
+  // ============================================================
+  // Phase 1: 文章拉取（日期感知的断点续传）
+  // ============================================================
+  // 设计原则：
+  // 1. E 列记录了每个账号在特定日期的拉取结果
+  // 2. 对当前日期而言，如果一个账号的 E 列没有当日结果 → 需要拉取（从未处理/旧日期结果）
+  // 3. 如果一个账号的 E 列有当日成功/无文章结果 → 跳过（已处理完毕）
+  // 4. 如果一个账号的 E 列有当日错误结果 → 需要重试
+  // 5. 这天然支持中断续传：第1批10个账号已写E列，重启后只拉第11个开始的账号
+  // 6. 也支持 backlog 旧日期：账号的 E 列有旧日期结果 → 对 backlog 日期仍需拉取
+  {
     const allAccounts = await getFakeids();
+    const enabled = allAccounts.filter(a => a.status === '启用');
     
-    // 判断：是全新日期（之前从未下载过该日文章）还是 backlog 恢复
-    // 🔧 FIX: backlog 模式下强制全量拉取所有账号（prev result 来自旧日期，不能用于判断新日期是否需要拉取）
-    const isBacklogMode = process.argv.includes('--backlog');
-    const isNewDate = existing.length === 0 || isBacklogMode;
+    // 日期感知过滤：对于当前 TARGET_DATE，哪些账号需要拉取
+    const pending = enabled.filter(a => needRetry(a, TARGET_DATE));
+    const skipped = enabled.filter(a => !needRetry(a, TARGET_DATE));
     
-    let enabledAccounts;
-    if (isNewDate) {
-      // 全新日期：下载所有启用账号，无论上次结果如何
-      console.log('\n🚀  Phase 1: 全量拉取（新日期）');
-      enabledAccounts = allAccounts.filter(a => a.status === '启用');
+    if (skipped.length > 0) {
+      console.log(`\n📋  跳过 ${skipped.length} 个已处理账号（当日结果已记录）`);
+    }
+    
+    if (pending.length === 0) {
+      console.log(`\n📂  全部 ${enabled.length} 个启用账号已完成当日拉取，跳过 Phase 1 下载`);
     } else {
-      // Backlog 恢复：只重试上次失败的账号
-      console.log('\n🚀  Phase 1: 文章拉取（断点恢复）');
-      console.log('  策略：先查 E 列（lastResult），只处理需要重试的账号');
-      console.log('  SUCCESS/NO_ARTICLE → 已成功，跳过');
-      console.log('  FREQ_CONTROL/API_ERROR/DOWNLOAD_ERROR → 需要重试');
-      console.log('  PENDING/空 → 从未拉取过，需要处理');
-      const needRetryAccounts = allAccounts.filter(a => needRetry(a));
-      enabledAccounts = needRetryAccounts.filter(a => a.status === '启用');
-      if (enabledAccounts.length < allAccounts.filter(a => a.status === '启用').length) {
-        console.log(`  📋  跳过 ${allAccounts.filter(a => a.status === '启用').length - enabledAccounts.length} 个已成功账号`);
+      console.log(`\n🚀  Phase 1: 文章拉取（断点续传）`);
+      console.log(`  📊 启用: ${enabled.length} | 待拉取: ${pending.length} | 已完成: ${skipped.length}`);
+      
+      const BATCH_SIZE_FETCH = 10;
+      const COOLDOWN_MS = 10 * 60 * 1000;
+      const allP1 = { downloaded: [], errors: [], skipped: [], noArticle: [] };
+      
+      for (let batchStart = 0; batchStart < pending.length; batchStart += BATCH_SIZE_FETCH) {
+        const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
+        const totalBatches = Math.ceil(pending.length / BATCH_SIZE_FETCH);
+        console.log(`\n📦  下载批次 ${batchNo}/${totalBatches} (账号 ${batchStart+1}-${Math.min(batchStart+BATCH_SIZE_FETCH, pending.length)})`);
+        const p1 = await phase1Partial(pending, batchStart, BATCH_SIZE_FETCH);
+        allP1.downloaded.push(...p1.downloaded);
+        allP1.errors.push(...p1.errors);
+        allP1.skipped.push(...p1.skipped);
+        allP1.noArticle.push(...p1.noArticle);
+        // 批次间冷却
+        if (batchStart + BATCH_SIZE_FETCH < pending.length) {
+          const coolMin = Math.ceil(COOLDOWN_MS / 60000);
+          console.log(`\n⏳ Session 冷却 ${coolMin}min...（剩余 ${pending.length - batchStart - BATCH_SIZE_FETCH} 个账号）`);
+          await sleep(COOLDOWN_MS);
+        }
       }
+      downloaded = allP1.downloaded;
+      console.log(`\n  文章: ${downloaded.length} 篇 | 无文章: ${allP1.noArticle.length} | 错误: ${allP1.errors.length}`);
     }
-    
-    for (let batchStart = 0; batchStart < enabledAccounts.length; batchStart += BATCH_SIZE_FETCH) {
-      const batchNo = Math.floor(batchStart / BATCH_SIZE_FETCH) + 1;
-      const totalBatches = Math.ceil(enabledAccounts.length / BATCH_SIZE_FETCH);
-      console.log(`\n📦  下载批次 ${batchNo}/${totalBatches} (账号 ${batchStart+1}-${Math.min(batchStart+BATCH_SIZE_FETCH, enabledAccounts.length)})`);
-      const p1 = await phase1Partial(enabledAccounts, batchStart, BATCH_SIZE_FETCH);
-      allP1.downloaded.push(...p1.downloaded);
-      allP1.errors.push(...p1.errors);
-      allP1.skipped.push(...p1.skipped);
-      allP1.noArticle.push(...p1.noArticle);
-      // 批次间冷却
-      if (batchStart + BATCH_SIZE_FETCH < enabledAccounts.length) {
-        const coolMin = Math.ceil(COOLDOWN_MS / 60000);
-        console.log(`\n⏳ Session 冷却 ${coolMin}min...（剩余 ${enabledAccounts.length - batchStart - BATCH_SIZE_FETCH} 个账号）`);
-        await sleep(COOLDOWN_MS);
-      }
-    }
-    downloaded = allP1.downloaded;
-    console.log(`\n  已下载: ${downloaded.length} 篇 | 错误: ${allP1.errors.length} | 无文章: ${allP1.noArticle.length}`);
-    console.log(`  处理模式: ${isNewDate ? '新日期全量' : '断点恢复'}`);
   }
   
   if (downloaded.length === 0) {

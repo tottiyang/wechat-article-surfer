@@ -465,36 +465,45 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 
 ## 🐛 已知 Bug 与踩坑记录
 
-### Bug 1: backlog 模式 Phase 1 被 existing.length > 0 跳过 (2026-06-15)
+### Bug 1: `needRetry()` 不区分新旧日期导致断点续传失败（2026-06-15）
 
-**修复 commit**: (每日工作流同目录)
+**症状**：cron 第1批（10个号）拉取了6/15的文章，第2批开始前 SIGTERM。下次 cron 启动后，E 列有 6/15 结果的 10 个号正确跳过，但剩下 58 个号 E 列是 6/12 的旧结果——`needRetry()` 看到"无文章"（旧结果）就跳过，导致 58 个号永不被拉取。
 
-**症状**：cron 第1批下载了4篇文章后，第2批开始前碰了 10 分钟冷却，之后进程恢复时发现已有文章 → 跳过了 Phase 1 → 剩余 58 个账号从未拉取。
-
-**根因**：`daily-workflow.js` 第836行逻辑：
+**根因**：`needRetry()` 只检查结果类型（成功/无文章/错误），不检查结果日期。
 ```javascript
-if (existing.length > 0) {
-    // ❌ backlog 模式下直接跳过了剩余账号的拉取
-    downloaded = existing;
+// ❌ old: 账号A的E列是 "2026/6/12 09:00|无文章"
+// needRetry() 看到 "无文章" → not in NEED_RETRY → return false → 跳过
+// 但这是 6/12 的旧结果，对 6/15 来说该账号从未处理
+```
+
+**系统性问题**：整个 Phase 1 没有任何**日期感知**的断点续传机制。`skipDownload = existing.length > 0` 仅凭磁盘文件数决定是否跳过 Phase 1，完全不看 E 列的日期。
+
+**修复**（2026-06-15 v2）：
+
+1. **新增 `parseTimestampDate(ts)`** — 从 E 列时间戳解析日期
+2. **`needRetry(account, targetDate)` 增加日期参数** — 当 E 列日期 ≠ 目标日期时，视为"当天未处理"
+3. **Phase 1 改为纯日期感知** — 不再用 `existing.length` 决定是否跳过，而是按每个账号的 E 列逐条判断
+
+关键代码（以 `parseTimestampDate` + `needRetry` 为基石）：
+```javascript
+const pending = enabled.filter(a => needRetry(a, TARGET_DATE));
+const skipped = enabled.filter(a => !needRetry(a, TARGET_DATE));
+
+if (skipped.length > 0) {
+  console.log(`跳过 ${skipped.length} 个已处理账号（当日结果已记录）`);
 }
 ```
 
-同时第 845-869 行的 backlog 恢复模式调用了 `needRetry()`，该函数检查 E 列的上次拉取结果：
-```javascript
-function needRetry(account) {
-  if (!account.lastResult || account.lastResult === '待处理') return true;
-  const result = account.lastResult.split('|')[1];
-  return ['频控限制','API错误','下载失败'].includes(result);
-  // ❌ "成功"和"无文章"都返回 false
-  // 但 "成功" 是针对旧日期的，不是新日期
-}
-```
-
-**修复**（2026-06-15）：在 backlog 模式下强制 `isNewDate = true`，全量拉取
-```javascript
-const isBacklogMode = process.argv.includes('--backlog');
-const isNewDate = existing.length === 0 || isBacklogMode;
-```
+**场景覆盖**：
+| 场景 | E列状态 | 结果 |
+|------|--------|------|
+| 全新日期/账号 | 空/待处理 | ✅ 拉取 |
+| 当天已成功 | 当天时间戳+成功 | ✅ 跳过 |
+| 当天无文章 | 当天时间戳+无文章 | ✅ 跳过 |
+| **旧日期成功（中断后重启）** | **旧日期+成功** | ✅ **拉取（旧日期不算）** |
+| **旧日期无文章（中断后重启）** | **旧日期+无文章** | ✅ **拉取** |
+| 当天频控/错误 | 当天时间戳+频控/错误 | ✅ 重试 |
+| 旧日期频控/错误（中断后重启） | 旧日期+频控/错误 | ✅ 拉取（统一当新日期处理） |
 
 ### Bug 2: KIMI_API_KEY 在 cron 子进程中丢失 (2026-06-15)
 
