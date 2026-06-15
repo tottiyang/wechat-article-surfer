@@ -105,7 +105,8 @@ export function qualityCheck(report, validCount, totalArticles) {
   ];
 
   const results = checks.map(c => {
-    const found = report.includes('## ' + c.name) || report.includes('### ' + c.name);
+    // 匹配任何包含章节名的标题行: ## 一、大盘判断 / ### 原文清单 / ## 📊 模式分析
+    const found = new RegExp('#{2,3}\\s+[^\\n]*?' + escapeRegex(c.name)).test(report);
     if (c.required && !found) {
       console.log('  \u26a0\ufe0f 缺少必需章节: ' + c.name);
     }
@@ -139,8 +140,12 @@ export function qualityCheck(report, validCount, totalArticles) {
   return finalScore;
 }
 
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ============================================================
-// LLM 调用（复用 Kimi API）
+// LLM 调用（Kimi API — Anthropic 消息格式）
 // ============================================================
 
 function callLlm(prompt) {
@@ -166,24 +171,28 @@ function callLlm(prompt) {
     fetch('https://api.kimi.com/coding/v1/messages', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'kimi-coder-v2.5',
-        messages: [{ role: 'user', content: prompt }],
+        model: 'kimi-for-coding',
         max_tokens: 4096,
-        temperature: 0.3,
+        messages: [{ role: 'user', content: prompt }],
       }),
       signal: controller.signal,
     })
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        if (!res.ok) throw new Error('Kimi API ' + res.status);
+        return res.json();
+      })
       .then(function (data) {
         clearTimeout(timeout);
-        if (data.choices && data.choices[0] && data.choices[0].message) {
-          resolve(data.choices[0].message.content || '');
+        var content = data.content && data.content[0] && data.content[0].text || '';
+        if (content) {
+          resolve(content);
         } else {
-          reject(new Error(JSON.stringify(data)));
+          reject(new Error('Kimi API returned empty content'));
         }
       })
       .catch(function (err) {
