@@ -105,7 +105,7 @@ node src/cli.js download https://mp.weixin.qq.com/s/xxx
 │   ├── generate-summary-prompt.js  # AI分析提示词生成器
 │   ├── fix-fakeids.js       # FakeId 修复工具
 │   ├── search_batch.js      # 批量搜索测试
-│   └── fetch-daily-articles.js  # 旧版拉取脚本（保留仅供参考）
+│   └── fetch-daily-articles.js  # 拉取脚本
 ├── bin/
 │   └── start-login.sh       # 一键启动登录
 └── .data/                   # 运行时数据（不提交 git）

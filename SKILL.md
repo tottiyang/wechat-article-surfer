@@ -343,7 +343,7 @@ node scripts/check_session.js
 │   ├── generate-summary-prompt.js  # AI分析提示词生成器
 │   ├── fix-fakeids.js       # FakeId修复
 │   ├── search_batch.js      # 批量搜索
-│   └── fetch-daily-articles.js  # 旧版拉取脚本（保留仅供参考）
+│   └── fetch-daily-articles.js  # 拉取脚本
 ├── bin/                     # 可执行脚本
 │   └── start-login.sh       # 一键启动登录
 └── .data/                   # 运行时数据（不提交 git）
@@ -381,7 +381,7 @@ node scripts/check_session.js
 | 手动模式 | 账号状态为手动 | 否 |
 | 待处理 | 从未拉取过 | **是** |
 
-### 补跑逻辑（日期感知，v2）
+### 补跑逻辑
 
 ```javascript
 // 需要补跑的结果类型
@@ -399,7 +399,7 @@ function needRetry(account, targetDate) {
   // 日期感知：检查 E 列结果的日期是否等于目标日期
   if (targetDate) {
     const tsDate = parseTimestampDate(ts);
-    if (tsDate && tsDate !== targetDate) return true;  // 旧日期 → 当天未处理
+    if (tsDate && tsDate !== targetDate) return true;  // 日期不匹配 → 当天未处理
   }
 
   return NEED_RETRY.includes(result);
@@ -414,11 +414,10 @@ function parseTimestampDate(ts) {
 }
 ```
 
-补跑策略（v2）：
-- **日期感知**：额外检查 E 列结果日期，旧日期结果视为当天未处理
+补跑策略：
+- 检查 E 列结果日期，不等于目标日期视为当天未处理
 - **只补** 频控限制/API错误/下载失败/待处理（且当天未处理）
 - **不补** 无文章/已禁用/手动模式/参数无效（当天已处理）
-- **跨天恢复**：中断后次日重跑，旧日期结果全部视为待处理
 
 ### 结果格式
 
@@ -452,68 +451,3 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 
 **注意**：KIMI_API_KEY 除了在 `~/.zshrc` 中，也写入了 `config.json` 的 `kimi.api_key` 字段。
 `callLlm()` 会优先从 `process.env.KIMI_API_KEY` 读取，fallback 到 `config.json`。
-
-## 🐛 已知 Bug 与踩坑记录
-
-### Bug 1: `needRetry()` 不区分新旧日期导致断点续传失败（2026-06-15）
-
-**症状**：cron 第1批（10个号）拉取了6/15的文章，第2批开始前 SIGTERM。下次 cron 启动后，E 列有 6/15 结果的 10 个号正确跳过，但剩下 58 个号 E 列是 6/12 的旧结果——`needRetry()` 看到"无文章"（旧结果）就跳过，导致 58 个号永不被拉取。
-
-**根因**：`needRetry()` 只检查结果类型（成功/无文章/错误），不检查结果日期。
-```javascript
-// ❌ old: 账号A的E列是 "2026/6/12 09:00|无文章"
-// needRetry() 看到 "无文章" → not in NEED_RETRY → return false → 跳过
-// 但这是 6/12 的旧结果，对 6/15 来说该账号从未处理
-```
-
-**系统性问题**：整个 Phase 1 没有任何**日期感知**的断点续传机制。`skipDownload = existing.length > 0` 仅凭磁盘文件数决定是否跳过 Phase 1，完全不看 E 列的日期。
-
-**修复**（2026-06-15 v2）：
-
-1. **新增 `parseTimestampDate(ts)`** — 从 E 列时间戳解析日期
-2. **`needRetry(account, targetDate)` 增加日期参数** — 当 E 列日期 ≠ 目标日期时，视为"当天未处理"
-3. **Phase 1 改为纯日期感知** — 不再用 `existing.length` 决定是否跳过，而是按每个账号的 E 列逐条判断
-
-关键代码（以 `parseTimestampDate` + `needRetry` 为基石）：
-```javascript
-const pending = enabled.filter(a => needRetry(a, TARGET_DATE));
-const skipped = enabled.filter(a => !needRetry(a, TARGET_DATE));
-
-if (skipped.length > 0) {
-  console.log(`跳过 ${skipped.length} 个已处理账号（当日结果已记录）`);
-}
-```
-
-**场景覆盖**：
-| 场景 | E列状态 | 结果 |
-|------|--------|------|
-| 全新日期/账号 | 空/待处理 | ✅ 拉取 |
-| 当天已成功 | 当天时间戳+成功 | ✅ 跳过 |
-| 当天无文章 | 当天时间戳+无文章 | ✅ 跳过 |
-| **旧日期成功（中断后重启）** | **旧日期+成功** | ✅ **拉取（旧日期不算）** |
-| **旧日期无文章（中断后重启）** | **旧日期+无文章** | ✅ **拉取** |
-| 当天频控/错误 | 当天时间戳+频控/错误 | ✅ 重试 |
-| 旧日期频控/错误（中断后重启） | 旧日期+频控/错误 | ✅ 拉取（统一当新日期处理） |
-
-### Bug 2: KIMI_API_KEY 在 cron 子进程中丢失 (2026-06-15)
-
-**症状**：AI 分析失败报 `KIMI_API_KEY not set`
-
-**根因**：API Key 定义在 `~/.zshrc` 中，cron 启动的子进程不加载 shell profile
-
-**临时解决**：在 exec 前 source ~/.zshrc
-
-**彻底解决**：在 `daily-workflow.js` 中将 KIMI_API_KEY 写入 config.json 或 .env 文件，不走环境变量。
-
-### Bug 3: 文章命名双下划线 (2026-06-15，已修复)
-
-**症状**：`fetch-daily-articles.js` 使用 `{名}_{日期}_{标题}.md`（下划线），`daily-workflow.js` 使用 `{名}-{日期}-{标题}.md`（连字符）。两者文件名不一致，`daily-workflow.js` 的 `parseFilename()` 无法解析下划线命名的文件（`bizName` 降级为 `'unknown'`）。
-
-**修复**（2026-06-15 v2）：
-- `fetch-daily-articles.js` 的命名函数 `makeArticleFilename()` 改为使用连字符
-- 磁盘上 7 个已存在的下划线文件已重命名为连字符格式
-- 废弃脚本 `batch-analyze.js`, `batch-analyze-all.js`, `analyze-publish.js` 已删除
-
-**统一命名规范**：所有文章文件名统一使用连字符：`{公众号名}-{YYYY-MM-DD}-{标题}.md`
-
-
