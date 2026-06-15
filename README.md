@@ -104,8 +104,7 @@ node src/cli.js download https://mp.weixin.qq.com/s/xxx
 │   ├── check_session.js     # 微信 session 检查
 │   ├── generate-summary-prompt.js  # AI分析提示词生成器
 │   ├── fix-fakeids.js       # FakeId 修复工具
-│   ├── search_batch.js      # 批量搜索测试
-│   └── fetch-daily-articles.js  # 拉取脚本
+│   └── search_batch.js      # 批量搜索测试
 ├── bin/
 │   └── start-login.sh       # 一键启动登录
 └── .data/                   # 运行时数据（不提交 git）

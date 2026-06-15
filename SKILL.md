@@ -342,8 +342,7 @@ node scripts/check_session.js
 │   ├── check_session.js     # 微信 session 检查
 │   ├── generate-summary-prompt.js  # AI分析提示词生成器
 │   ├── fix-fakeids.js       # FakeId修复
-│   ├── search_batch.js      # 批量搜索
-│   └── fetch-daily-articles.js  # 拉取脚本
+│   └── search_batch.js      # 批量搜索
 ├── bin/                     # 可执行脚本
 │   └── start-login.sh       # 一键启动登录
 └── .data/                   # 运行时数据（不提交 git）
