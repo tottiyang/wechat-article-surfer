@@ -654,6 +654,204 @@ function callLlm(prompt) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// 确定性报告聚合（无LLM合并，不丢数据）
+// ═══════════════════════════════════════════════════════════════════
+
+/** 解析单篇文章的字段提取结果 */
+function parseArticleFields(text) {
+  const fields = {};
+  const lines = text.split('\n');
+  let currentKey = null, currentVal = [];
+  
+  for (const line of lines) {
+    const m = line.match(/^(来源|板块\/行业|具体标的|市场判断|核心观点|操作建议|风险提示):\s*(.*)/);
+    if (m) {
+      if (currentKey) fields[currentKey] = currentVal.join('\n').trim();
+      currentKey = m[1];
+      currentVal = [m[2]];
+    } else if (currentKey && line.trim()) {
+      currentVal.push(line);
+    }
+  }
+  if (currentKey) fields[currentKey] = currentVal.join('\n').trim();
+  
+  const src = fields['来源'] || '';
+  const sep = src.indexOf(' — ');
+  const rawTitle = sep > 0 ? src.slice(sep + 3).trim() : '';
+  const isNonFinance = src.includes('[非财经]');
+  return {
+    source: sep > 0 ? src.slice(0, sep).trim() : src,
+    title: rawTitle.replace(/\s*\[非财经\]\s*$/, '').trim(),
+    sectors: (fields['板块/行业'] || '').split(',').map(s => s.trim()).filter(Boolean),
+    stocks: (fields['具体标的'] || '').split(',').map(s => s.trim()).filter(s => s && s !== '无'),
+    marketView: fields['市场判断'] || '',
+    coreView: fields['核心观点'] || '',
+    strategy: fields['操作建议'] || '',
+    risk: fields['风险提示'] || '',
+    isNonFinance,
+    isEmpty: ['来源','板块/行业','具体标的','市场判断','核心观点','操作建议','风险提示'].every(k => !fields[k] || fields[k] === '无'),
+  };
+}
+
+/** 解析全部批次的提取结果 */
+function parseAllArticles(rawText) {
+  // 按 --- 分割每个公众号的提取
+  const blocks = rawText.split(/\n---\s*\n/);
+  const articles = [];
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed || trimmed === '---') continue;
+    const a = parseArticleFields(trimmed);
+    if (a.source || a.coreView !== '无') articles.push(a);
+  }
+  return articles;
+}
+
+/** 构建结构化汇总报告 */
+function buildStructuredReport(articles, targetDate, totalCount) {
+  const hasContent = a => !a.isEmpty && !a.isNonFinance;
+  const valid = articles.filter(hasContent);
+  
+  // 若无一篇文章有有效提取，退回简单串联模式
+  if (valid.length === 0) {
+    return [`# 财经观点汇总 — ${targetDate}`,
+      `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
+      `> 共分析 ${totalCount} 篇文章（均无有效提取）`,
+      '',
+      ...articles.map(a => `- **${a.source}** — ${a.title}${a.isNonFinance ? ' [非财经]' : ''}`),
+    ].join('\n');
+  }
+  
+  // ── 1. 大盘判断 ──
+  const marketViews = valid.filter(a => a.marketView && a.marketView !== '无');
+  
+  // ── 2. 热点板块聚合 ──
+  const sectorMap = new Map();  // sector → [{ source, coreView, strategy }]
+  for (const a of valid) {
+    for (const s of a.sectors) {
+      if (!s || s === '无') continue;
+      if (!sectorMap.has(s)) sectorMap.set(s, []);
+      sectorMap.get(s).push({ source: a.source, coreView: a.coreView, strategy: a.strategy });
+    }
+  }
+  // 按提及频率排序
+  const sortedSectors = [...sectorMap.entries()].sort((a, b) => b[1].length - a[1].length);
+  
+  // ── 3. 投资标的（表格）──
+  const stockRows = [];
+  for (const a of valid) {
+    for (const s of a.stocks) {
+      // 从核心观点里提取方向
+      let direction = '关注';
+      const cv = a.coreView || '';
+      if (/看好|利好|受益|值得|建议买入|建议加仓|放量/.test(cv)) direction = '🔺 看好';
+      else if (/警惕|风险|谨慎|卖出|回避|减仓/.test(cv)) direction = '🔻 谨慎';
+      stockRows.push({ stock: s, source: a.source, direction, logic: cv.slice(0, 80) });
+    }
+  }
+  
+  // ── 4. 操作策略 ──
+  const strategies = [];
+  for (const a of valid) {
+    if (a.strategy && a.strategy !== '无') {
+      strategies.push({ source: a.source, text: a.strategy });
+    }
+  }
+  
+  // ── 5. 风险提示 ──
+  const risks = [];
+  for (const a of valid) {
+    if (a.risk && a.risk !== '无') {
+      risks.push({ source: a.source, text: a.risk });
+    }
+  }
+  
+  // ── 构建 Markdown ──
+  const lines = [
+    `# 财经观点汇总 — ${targetDate}`,
+    `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
+    `> 共分析 ${totalCount} 篇文章`,
+    '',
+  ];
+  
+  // 1. 大盘判断
+  if (marketViews.length > 0) {
+    lines.push('## 一、大盘判断', '');
+    for (const a of marketViews) {
+      lines.push(`**${a.source}**：${a.marketView}`);
+      if (a.coreView && a.coreView !== '无') {
+        const short = a.coreView.length > 120 ? a.coreView.slice(0, 120) + '…' : a.coreView;
+        lines.push(`> ${short}`);
+      }
+      lines.push('');
+    }
+  }
+  
+  // 2. 热点板块
+  if (sortedSectors.length > 0) {
+    lines.push('## 二、热点板块', '');
+    const topSectors = sortedSectors.slice(0, 15);
+    for (const [sector, entries] of topSectors) {
+      const sources = [...new Set(entries.map(e => e.source))];
+      lines.push(`### ${sector}（${sources.length} 个来源）`);
+      lines.push(`涵盖：${sources.join('、')}`);
+      // 取代表性观点
+      const views = entries.filter(e => e.coreView && e.coreView !== '无');
+      if (views.length > 0) {
+        const sample = views.slice(0, 3).map(v => `- [${v.source}] ${v.coreView.slice(0, 150)}`).join('\n');
+        lines.push(sample);
+      }
+      lines.push('');
+    }
+  }
+  
+  // 3. 投资标的
+  if (stockRows.length > 0) {
+    lines.push('## 三、投资标的', '');
+    lines.push('| 标的 | 来源 | 方向 | 逻辑 |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const r of stockRows.slice(0, 50)) {
+      lines.push(`| ${r.stock} | ${r.source} | ${r.direction} | ${r.logic} |`);
+    }
+    if (stockRows.length > 50) {
+      lines.push(`| … | 共 ${stockRows.length} 个标的 |  |  |`);
+    }
+    lines.push('');
+  }
+  
+  // 4. 操作策略
+  if (strategies.length > 0) {
+    lines.push('## 四、操作策略', '');
+    for (const s of strategies) {
+      lines.push(`- **[${s.source}]** ${s.text}`);
+    }
+    lines.push('');
+  }
+  
+  // 5. 风险提示
+  if (risks.length > 0) {
+    lines.push('## 五、风险提示', '');
+    for (const r of risks) {
+      lines.push(`- **[${r.source}]** ${r.text}`);
+    }
+    lines.push('');
+  }
+  
+  // 6. 原始文章列表
+  lines.push('---');
+  lines.push('');
+  lines.push('### 原文清单');
+  lines.push('');
+  for (const a of articles) {
+    const tag = a.isNonFinance ? ' [非财经]' : a.isEmpty ? ' [无有效提取]' : '';
+    lines.push(`- **${a.source}** — ${a.title}${tag}`);
+  }
+  
+  return lines.join('\n');
+}
+
+
 export async function analyzeArticles(downloaded) {
   // 清理残留 zombie openclaw-infer 进程，避免阻塞新推理
   try {
@@ -721,26 +919,18 @@ export async function analyzeArticles(downloaded) {
     return cleaned;
   });
   
-  const concatReport = [
-    `# 财经观点汇总 — ${TARGET_DATE}`,
-    `> 数据来源：微信公众号 | AI自动提取，仅供参考`,
-    `> 共分析 ${downloaded.length} 篇文章`,
-    `> 提取批次：${allResults.length}/${Math.ceil(articles.length / BATCH_SIZE)}`,
-    ``,
-    ...cleanedResults.flatMap((r, i) => [
-      `---\n## 第 ${i+1} 组 (${Math.min(BATCH_SIZE, articles.length - i * BATCH_SIZE)} 篇)\n`,
-      r,
-    ]),
-  ].join('\n\n');
+  // Phase 2b: 确定性聚合（解析字段 → 结构化报告）
+  const articlesParsed = parseAllArticles(cleanedResults.join('\n\n'));
+  const structuredReport = buildStructuredReport(articlesParsed, TARGET_DATE, downloaded.length);
 
   if (!existsSync(ANALYSIS_DIR)) mkdirSync(ANALYSIS_DIR, { recursive: true });
   const rp = join(ANALYSIS_DIR, `${TARGET_DATE}-观点汇总.md`);
-  writeFileSync(rp, concatReport, 'utf-8');
+  writeFileSync(rp, structuredReport, 'utf-8');
   
-  const reportSizeKB = (concatReport.length / 1024).toFixed(1);
+  const reportSizeKB = (structuredReport.length / 1024).toFixed(1);
   console.log(`  💾 ${rp} (${reportSizeKB}KB)`);
 
-  return { reportPath: rp, content: concatReport };
+  return { reportPath: rp, content: structuredReport };
 }
 
 
