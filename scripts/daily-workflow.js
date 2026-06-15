@@ -839,16 +839,12 @@ export function buildStructuredReport(articles, targetDate, totalCount) {
     }
   }
   
-  // 3. 投资标的
+  // 3. 投资标的（用 bullet list 代替表格，避免飞书 publisher 400 错误）
   if (stockRows.length > 0) {
     lines.push('## 三、投资标的', '');
-    lines.push('| 标的 | 来源 | 方向 | 逻辑 |');
-    lines.push('| --- | --- | --- | --- |');
+    lines.push(`共 ${stockRows.length} 个标的：\n`);
     for (const r of stockRows.slice(0, 50)) {
-      lines.push(`| ${r.stock} | ${r.source} | ${r.direction} | ${r.logic} |`);
-    }
-    if (stockRows.length > 50) {
-      lines.push(`| … | 共 ${stockRows.length} 个标的 |  |  |`);
+      lines.push(`- **${r.stock}**（${r.source}）${r.direction}：${r.logic}`);
     }
     lines.push('');
   }
@@ -1005,6 +1001,55 @@ export async function analyzeArticles(downloaded) {
     const separator = '\n---\n\n### 原文清单';
     finalContent = structuredReport.replace(separator, '\n\n' + patternSection + '\n\n' + separator);
     console.log('  ✅ 模式分析已嵌入 (' + (patternSection.length / 1024).toFixed(1) + 'KB)');
+  }
+
+  // Phase 2e: LLM 最终合成 — 将结构化数据合成为参考文档品质的报告
+  if (valid.length >= 5) {
+    console.log('\n🧠  LLM 最终合成（生成参考品质报告）');
+    try {
+      // 用确定性报告+提取数据作为输入
+      const extractData = valid.slice(0, 15).map(a => ({
+        source: a.source,
+        marketView: a.marketView?.substring(0, 200) || '',
+        sectors: a.sectors?.filter(Boolean) || [],
+        stocks: a.stocks?.filter(Boolean) || [],
+        coreView: a.coreView?.substring(0, 300) || '',
+        strategy: a.strategy?.substring(0, 200) || '',
+        risk: a.risk?.substring(0, 200) || '',
+        framework: a.framework?.substring(0, 200) || '',
+        specialView: a.specialView?.substring(0, 200) || '',
+      })).filter(a => a.marketView || a.sectors.length > 0 || a.stocks.length > 0);
+      
+      const synthesisPrompt = `你是一个资深财经分析师。请将以下${extractData.length}篇公众号财经文章的结构化提取数据，重新组织成一份专业、主题导向的投资简报。
+
+**格式要求：**
+1. 按主题组织（非按来源），如：宏观环境 → 热点板块深度 → 核心博主框架 → 共识与分歧 → 操作策略与风险 → 标的汇总 → 原文清单
+2. 每个板块下整合多位博主观点进行交叉对比
+3. 避免 markdown 表格（用 bullet list + **加粗**）
+4. 风格：简洁、数据支撑、突出核心分歧
+5. 保留每位博主的关键判断和署名
+
+**输入数据（JSON格式）：**
+${JSON.stringify(extractData, null, 2)}
+
+**输出要求：**
+- 使用 ## 二级标题和 ### 三级标题
+- 重要判断用 **加粗**
+- 每个观点注明来源 [来源名]
+- 长度控制在 2000-4000 字
+- 直接在摘要中给出全文最核心的 1-3 个判断`;
+
+      const synthesized = await callLlm(synthesisPrompt);
+      if (synthesized && synthesized.length > 500) {
+        const origList = finalContent.includes('### 原文清单') ? finalContent.split('### 原文清单')[1] || '' : '';
+        finalContent = `# 财经观点汇总 — ${TARGET_DATE}\n> 数据来源：微信公众号 | LLM综合合成\n> 共分析 ${downloaded.length} 篇文章\n\n---\n\n${synthesized}\n\n---\n\n${patternSection || ''}\n\n---\n\n### 原文清单${origList}`;
+        console.log(`  ✅ LLM合成报告 (${(finalContent.length / 1024).toFixed(1)}KB)`);
+      } else {
+        console.log(`  ⚠️ LLM合成输出过短 (${synthesized?.length || 0} chars)，使用确定性报告`);
+      }
+    } catch (e) {
+      console.log('  ⚠️ LLM合成失败: ' + (e.message || e).substring(0, 100) + '，使用确定性报告');
+    }
   }
 
   writeFileSync(rp, finalContent, 'utf-8');
