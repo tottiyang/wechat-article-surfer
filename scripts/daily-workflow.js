@@ -1256,10 +1256,14 @@ async function processDate(date) {
     return { date, downloaded: 0, analysis: false, wiki: false };
   }
   
-  // Phase 1b: IMA Upload
-  console.log('\n📤  Phase 1b: IMA 上传');
-  const p1b = await phase1b(downloaded);
-  console.log(`  ✅ ${p1b.ok} 成功 | ❌ ${p1b.fail} 失败`);
+  // Phase 1b: IMA Upload（config.skip_ima=true 时跳过）
+  if (CONFIG.skip_ima) {
+    console.log('  ⏭️  IMA 上传已跳过 (config.skip_ima=true)');
+  } else {
+    console.log('\n📤  Phase 1b: IMA 上传');
+    const p1b = await phase1b(downloaded);
+    console.log(`  ✅ ${p1b.ok} 成功 | ❌ ${p1b.fail} 失败`);
+  }
   
   // Phase 2: AI Analysis
   console.log('\n🧠  Phase 2: AI 分析');
