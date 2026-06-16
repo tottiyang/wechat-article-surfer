@@ -92,21 +92,50 @@ function composeConsensusPrompt(summary) {
  * @returns {number} 评分 (0-100)
  */
 export function qualityCheck(report, validCount, totalArticles) {
+  // 章节检测：同一话题可用多种章节名（适配LLM综合/确定性两种格式）
   const checks = [
-    { name: '大盘判断', required: true },
-    { name: '热点板块', required: true },
-    { name: '投资标的', required: true },
-    { name: '操作策略', required: true },
-    { name: '风险提示', required: true },
-    { name: '原文清单', required: true },
-    { name: '分析框架一览', required: false },
-    { name: '特色/反共识观点', required: false },
-    { name: '模式分析', required: false },
+    {
+      name: '大盘判断/宏观', required: true,
+      patterns: ['大盘判断', '宏观环境', '核心摘要', '市场情绪']
+    },
+    {
+      name: '热点板块', required: true,
+      patterns: ['热点板块', '板块深度']
+    },
+    {
+      name: '投资标的', required: true,
+      patterns: ['投资标的', '标的汇总']
+    },
+    {
+      name: '操作策略', required: true,
+      patterns: ['操作策略', '策略与风险']
+    },
+    {
+      name: '风险提示', required: true,
+      patterns: ['风险提示', '防御与风险']
+    },
+    {
+      name: '原文清单', required: true,
+      patterns: ['原文清单']
+    },
+    {
+      name: '分析框架一览', required: false,
+      patterns: ['分析框架', '核心博主框架', '方法论']
+    },
+    {
+      name: '特色/反共识观点', required: false,
+      patterns: ['特色观点', '反共识']
+    },
+    {
+      name: '模式分析', required: false,
+      patterns: ['模式分析', '共识', '分歧']
+    },
   ];
 
   const results = checks.map(c => {
-    // 匹配任何包含章节名的标题行: ## 一、大盘判断 / ### 原文清单 / ## 📊 模式分析
-    const found = new RegExp('#{2,3}\\s+[^\\n]*?' + escapeRegex(c.name)).test(report);
+    const found = c.patterns.some(p =>
+      new RegExp('#{2,3}\\s+[^\\n]*?' + escapeRegex(p)).test(report)
+    );
     if (c.required && !found) {
       console.log('  \u26a0\ufe0f 缺少必需章节: ' + c.name);
     }
@@ -129,8 +158,8 @@ export function qualityCheck(report, validCount, totalArticles) {
   const bonus = Math.min(extraSections * 5, 15);
   const finalScore = Math.min(score + (score >= 85 ? bonus : 0), 100);
 
-  const icon = finalScore >= 85 ? '\u2705 PASS' : '\u26a0\ufe0f FAIL (低于85)';
-  console.log('\n\ud83d\udcca 质量评分: ' + finalScore + '/100 ' + icon);
+  const icon = finalScore >= 85 ? '\u2705 PASS' : '\u26A0\ufe0f FAIL (低于85)';
+  console.log('\n\u{1F4CA} 质量评分: ' + finalScore + '/100 ' + icon);
 
   if (finalScore < 85) {
     const missing = requiredChecks.filter(r => !r.found).map(r => r.name);
