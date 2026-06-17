@@ -48,13 +48,21 @@ function parseDateArgs() {
   return { singleDate, fromDate, toDate, isBacklog };
 }
 
+/** 格式化 Date → YYYY-MM-DD（本地时区） */
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 /** 返回 YYYY-MM-DD 字符串数组 */
 function generateDateRange(from, to) {
   const dates = [];
   const d = new Date(from);
   const end = new Date(to);
   while (d <= end) {
-    dates.push(d.toISOString().slice(0, 10));
+    dates.push(localDateStr(d));
     d.setDate(d.getDate() + 1);
   }
   return dates;
@@ -66,35 +74,16 @@ function generateDateRange(from, to) {
  *       同时包含昨天（cron 正常目标日期）如果它还没处理
  */
 function detectBacklogDates() {
-  if (!existsSync(ARTICLE_DIR)) return [];
-  const files = readdirSync(ARTICLE_DIR).filter(f => f.endsWith('.md'));
-  
-  // 提取所有日期
-  const dateSet = new Set();
-  for (const f of files) {
-    const m = f.match(/-((2026)-\d{2}-\d{2})-/);
-    if (m) dateSet.add(m[1]);
+  // 昨天 = 本地时区的上一天
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const yesterday = localDateStr(d);
+  const analysisFile = join(ANALYSIS_DIR, `${yesterday}-观点汇总.md`);
+  if (existsSync(analysisFile) && readFileSync(analysisFile, 'utf-8').trim().length > 100) {
+    console.log(`  ⏭️  ${yesterday}: 分析已存在，跳过`);
+    return [];
   }
-  
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  if (!dateSet.has(yesterday)) dateSet.add(yesterday);
-  
-  // 过滤出需要处理的日期：有文章但无分析文件
-  const backlog = [];
-  for (const date of [...dateSet].sort()) {
-    const analysisFile = join(ANALYSIS_DIR, `${date}-观点汇总.md`);
-    if (existsSync(analysisFile) && readFileSync(analysisFile, 'utf-8').trim().length > 100) {
-      console.log(`  ⏭️  ${date}: 分析已存在，跳过`);
-      continue;
-    }
-    // 检查是否有文章文件
-    const articleCount = files.filter(f => f.includes(date)).length;
-    if (articleCount > 0 || date === yesterday) {
-      backlog.push({ date, articleCount });
-    }
-  }
-  
-  return backlog.sort();
+  return [{ date: yesterday, articleCount: -1 }];
 }
 
 // 确定本次运行的日期列表
@@ -107,11 +96,13 @@ const DATES_TO_PROCESS = (() => {
     return dates;
   }
   if (dateArgs.fromDate) {
-    const to = dateArgs.toDate || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const fallback = new Date();
+    fallback.setDate(fallback.getDate() - 1);
+    const to = dateArgs.toDate || localDateStr(fallback);
     return generateDateRange(dateArgs.fromDate, to);
   }
   // 单日期模式
-  const d = dateArgs.singleDate || new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const d = dateArgs.singleDate || (() => { const dd = new Date(); dd.setDate(dd.getDate() - 1); return localDateStr(dd); })();
   return [d];
 })();
 
