@@ -1258,14 +1258,21 @@ async function processDate(date) {
   
   // Phase 2: AI Analysis
   console.log('\n🧠  Phase 2: AI 分析');
-  const analysis = await analyzeArticles(downloaded);
+  let analysis = await analyzeArticles(downloaded);
   
-  // Phase 3: Feishu Wiki publish（质量门禁：低于 85 分不发布）
+  // 质量门禁：低于 85 分重试一次 Phase 2（不重下载），仍不过则跳过发布
+  let retried = false;
+  if (analysis && analysis.qualityScore !== undefined && analysis.qualityScore < 85) {
+    console.log(`\n♻️  质量评分 ${analysis.qualityScore}/100，低于 85，重试 Phase 2...`);
+    analysis = await analyzeArticles(downloaded);
+    retried = true;
+  }
+  
   const qualityPass = analysis?.qualityScore !== undefined && analysis.qualityScore >= 85;
   const publishOk = qualityPass ? await publishToWiki(analysis.content) : null;
   
   if (analysis && !qualityPass) {
-    console.log(`\n⏭️  质量评分 ${analysis.qualityScore}/100，低于 85 分，跳过发布`);
+    console.log(`\n⏭️  质量评分 ${analysis.qualityScore}/100，${retried ? '重试后仍' : ''}低于 85 分，跳过发布`);
   }
   
   return {
@@ -1274,6 +1281,7 @@ async function processDate(date) {
     analysis: analysis !== null,
     qualityScore: analysis?.qualityScore ?? null,
     wiki: publishOk !== null,
+    retried,
   };
 }
 
