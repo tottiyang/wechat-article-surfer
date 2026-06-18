@@ -112,7 +112,7 @@ export function qualityCheck(report, validCount, totalArticles) {
     },
     {
       name: '风险提示', required: true,
-      patterns: ['风险提示', '防御与风险']
+      patterns: ['风险提示', '防御与风险', '操作策略与风险', '策略与风险']
     },
     {
       name: '原文清单', required: true,

@@ -229,8 +229,8 @@ async function getFakeids() {
 async function updateSheetResult(rowIndex, result, detail = '') {
   const sid = CONFIG.feishu.sheet_id;
   const cell = `E${rowIndex}`; // E列: 最后拉取结果
-  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-');
-  const value = detail ? `${now}|${result}|${detail}` : `${now}|${result}`;
+  // 存储文章日期而非执行时间戳，确保 needRetry() 的日期对比正确匹配
+  const value = detail ? `${TARGET_DATE}|${result}|${detail}` : `${TARGET_DATE}|${result}`;
   return feishuSheet(`/values`, 'PUT', {
     valueRange: { range: `${sid}!${cell}:${cell}`, values: [[value]] }
   });
@@ -1049,9 +1049,9 @@ ${JSON.stringify(extractData, null, 2)}
   console.log(`  💾 ${rp} (${reportSizeKB}KB)`);
 
   // Phase 2d: 质量检查
-  qualityCheck(finalContent, valid.length, downloaded.length);
+  const qualityScore = qualityCheck(finalContent, valid.length, downloaded.length);
 
-  return { reportPath: rp, content: finalContent };
+  return { reportPath: rp, content: finalContent, qualityScore };
 }
 
 
@@ -1260,13 +1260,19 @@ async function processDate(date) {
   console.log('\n🧠  Phase 2: AI 分析');
   const analysis = await analyzeArticles(downloaded);
   
-  // Phase 3: Feishu Wiki publish
-  const publishOk = await publishToWiki(analysis?.content);
+  // Phase 3: Feishu Wiki publish（质量门禁：低于 85 分不发布）
+  const qualityPass = analysis?.qualityScore !== undefined && analysis.qualityScore >= 85;
+  const publishOk = qualityPass ? await publishToWiki(analysis.content) : null;
+  
+  if (analysis && !qualityPass) {
+    console.log(`\n⏭️  质量评分 ${analysis.qualityScore}/100，低于 85 分，跳过发布`);
+  }
   
   return {
     date,
     downloaded: downloaded.length,
     analysis: analysis !== null,
+    qualityScore: analysis?.qualityScore ?? null,
     wiki: publishOk !== null,
   };
 }
