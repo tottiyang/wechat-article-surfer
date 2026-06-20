@@ -269,37 +269,55 @@ curl -s -X POST "https://ima.qq.com/openapi/wiki/v1/add_knowledge" \
 
 ### 每日 Cron（02:00 AM）
 
-```bash
-# 方式 A - 内置 cron 工具
-cron(schedule: {"kind":"cron","cron":"0 2 * * *"}, prompt: "...")
+使用 `launch-daemon.sh`（基于 macOS launchd）启动后台进程，
+**彻底解决 exec 工具 timeout 杀死子进程的问题**。
+
+**已知问题：**
+- `nohup ... &` 在 exec 的默认 timeout（~5min）到期时会被 SIGKILL
+- `fork() + setsid()` 也无法逃脱，因为 exec 会追踪进程树
+- **唯一解决方案**：通过 `launchctl submit` 注册为 macOS launchd 管理进程，
+  进程由系统管理，exec 工具无法影响
+
+**Cron Agent 模板（已部署为 cron id=9409c123）：**
+
+```
+1. TARGET_DATE=$(date -v-1d +%Y-%m-%d)
+2. cd ~/.qclaw/skills/wechat-article-surfer
+3. NODE_PATH=$(which node || echo "/opt/homebrew/bin/node")
+4. ./scripts/launch-daemon.sh "daily-workflow-$TARGET_DATE" \
+     . \
+     "/tmp/daily-workflow-$TARGET_DATE-$(date +%H%M).log" \
+     $NODE_PATH scripts/daily-workflow.js --date=$TARGET_DATE
+```
+
+**launch-daemon.sh 原理：**
+
+```mermaid
+flowchart LR
+    A[Cron Agent] -->|launchctl submit| B[launchd]
+    B --> C[后台 Node 进程]
+    C --> D[Phase 1: 下载文章]
+    C --> E[Phase 2: AI 分析]
+    F[exec timeout ~5min] --x|杀不到| C
 ```
 
 ### 一次性测试（立即执行）
 
 ```bash
-openclaw cron add --message "立即执行公众号文章抓取分析" --no-cron
+cd ~/.qclaw/skills/wechat-article-surfer
+./scripts/launch-daemon.sh "daily-workflow-test" . /tmp/daily-test.log \
+  /opt/homebrew/bin/node scripts/daily-workflow.js --date 2026-06-17
 ```
 
 ### 手动触发
 
-用户发送"抓取公众号文章"时，按 SKILL.md 流程执行一次。
-
----
-
-## 执行流程（Agent 执行路径）
-
-当 cron（每日 02:00）触发时，直接运行 `daily-workflow.js --backlog`：
-
 ```bash
-cd {managed_skill_dir}/wechat-article-surfer
-node scripts/daily-workflow.js --backlog
-```
+# 查看实时进度
+tail -f /tmp/daily-workflow-*.log
 
-`--backlog` 模式自动检测所有未完成的日期并逐个执行，每个日期独立完成完整 Phase。
+# 停止后台任务
+launchctl remove daily-workflow-2026-06-17
 
-### 手动触发
-
-```bash
 # 指定日期
 node scripts/daily-workflow.js --date 2026-06-15
 
@@ -415,6 +433,7 @@ node scripts/check_session.js
 │   └── cli.js               # 命令行工具
 ├── scripts/                 # 业务脚本
 │   ├── daily-workflow.js    # 每日工作流（全自动，唯一入口）
+│   ├── launch-daemon.sh     # launchd 后台启动器（解决 exec 超时杀进程）
 │   ├── report-enhancer.js   # Phase 2c(LLM模式分析)+2d(质量自审)
 │   ├── ima-upload.cjs       # IMA上传助手
 │   ├── check_session.js     # 微信 session 检查
@@ -528,3 +547,10 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 
 **注意**：KIMI_API_KEY 除了在 `~/.zshrc` 中，也写入了 `config.json` 的 `kimi.api_key` 字段。
 `callLlm()` 会优先从 `process.env.KIMI_API_KEY` 读取，fallback 到 `config.json`。
+
+## 飞书 Wiki 发布逻辑
+
+`publishToWiki()` 使用 **覆盖而非追加** 的策略：
+1. 在同名旧文档：通过 `moveNode` 将其移回根目录（POST `/wiki/v2/spaces/:space/nodes/:token/move`）
+2. 腾出位置后，通过 `feishu-md-publisher` 创建新文档
+3. 结果：月文件夹内永远只有最新版文档

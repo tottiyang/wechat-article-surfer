@@ -1088,6 +1088,25 @@ async function createNode(parent, title) {
   return data.data.node.node_token;
 }
 
+async function findChildWithObj(parent, title) {
+  // 查找子节点，返回 { node_token, obj_token } 或 null
+  const data = await feishuApi('GET',
+    `/wiki/v2/spaces/${CONFIG.feishu.space_id}/nodes?parent_node_token=${parent}&page_size=50`);
+  if (data.code !== 0) return null;
+  for (const item of data.data?.items || []) {
+    if (item.title === title) return { nodeToken: item.node_token, objToken: item.obj_token };
+  }
+  return null;
+}
+
+async function moveNode(nodeToken, targetParentToken) {
+  // 移动 wiki 节点到指定父节点下（POST 而非 PATCH）
+  const data = await feishuApi('POST', `/wiki/v2/spaces/${CONFIG.feishu.space_id}/nodes/${nodeToken}/move`, {
+    target_parent_token: targetParentToken,
+  });
+  return data.code === 0;
+}
+
 async function ensurePath(root) {
   const yearNode = await findChild(root, YEAR) || await createNode(root, YEAR);
   const monthNode = await findChild(yearNode, MONTH) || await createNode(yearNode, MONTH);
@@ -1104,12 +1123,25 @@ export async function publishToWiki(reportContent) {
   const monthToken = await ensurePath(parent);
   console.log(`  📁 ${YEAR}/${MONTH} → ${monthToken}`);
 
+  // 查同名旧文档，有则移走（腾出位置给新文档），无则直接新建
+  const title = `${TARGET_DATE} 财经观点汇总`;
+  const oldDoc = await findChildWithObj(monthToken, title);
+  if (oldDoc) {
+    // 移回根目录，从月文件夹中移除旧节点
+    const rootToken = CONFIG.feishu.default_parent_node;
+    const moved = await moveNode(oldDoc.nodeToken, rootToken);
+    if (moved) {
+      console.log(`  🗑️  已移走旧文档，待发新版`);
+    } else {
+      console.log(`  ⚠️ 移走旧文档失败，仍尝试新建`);
+    }
+  }
+
   // Write to temp file for publisher
   const tmpFile = join(ANALYSIS_DIR || '.', `${TARGET_DATE}-report.md`);
   writeFileSync(tmpFile, reportContent, 'utf-8');
 
   const publisher = '/Users/totti/.qclaw/skills/feishu-md-publisher/publish.py';
-  const title = `${TARGET_DATE} 财经观点汇总`;
 
   try {
     const out = execSync(`python3 "${publisher}" --title "${title}" --file "${tmpFile}" --parent ${monthToken}`, {
