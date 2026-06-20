@@ -1099,12 +1099,23 @@ async function findChildWithObj(parent, title) {
   return null;
 }
 
-async function moveNode(nodeToken, targetParentToken) {
-  // 移动 wiki 节点到指定父节点下（POST 而非 PATCH）
-  const data = await feishuApi('POST', `/wiki/v2/spaces/${CONFIG.feishu.space_id}/nodes/${nodeToken}/move`, {
-    target_parent_token: targetParentToken,
-  });
-  return data.code === 0;
+async function clearDocumentContent(docToken) {
+  // 清空飞书文档的所有 blocks，保留文档本身
+  // 1. 获取所有子节点
+  const children = await feishuApi('GET',
+    `/docx/v1/documents/${docToken}/blocks/${docToken}/children?page_size=500`);
+  if (children.code !== 0) {
+    console.warn(`  ⚠️ 获取文档 blocks 失败: ${children.msg}`);
+    return false;
+  }
+  const items = children.data?.items || [];
+  if (items.length === 0) return true; // 已空
+
+  // 2. 批量删除
+  const del = await feishuApi('DELETE',
+    `/docx/v1/documents/${docToken}/blocks/${docToken}/children/batch_delete`,
+    { start_index: 0, end_index: items.length });
+  return del.code === 0;
 }
 
 async function ensurePath(root) {
@@ -1123,28 +1134,39 @@ export async function publishToWiki(reportContent) {
   const monthToken = await ensurePath(parent);
   console.log(`  📁 ${YEAR}/${MONTH} → ${monthToken}`);
 
-  // 查同名旧文档，有则移走（腾出位置给新文档），无则直接新建
   const title = `${TARGET_DATE} 财经观点汇总`;
-  const oldDoc = await findChildWithObj(monthToken, title);
-  if (oldDoc) {
-    // 移回根目录，从月文件夹中移除旧节点
-    const rootToken = CONFIG.feishu.default_parent_node;
-    const moved = await moveNode(oldDoc.nodeToken, rootToken);
-    if (moved) {
-      console.log(`  🗑️  已移走旧文档，待发新版`);
-    } else {
-      console.log(`  ⚠️ 移走旧文档失败，仍尝试新建`);
-    }
-  }
 
-  // Write to temp file for publisher
+  // Write temp file for publisher
   const tmpFile = join(ANALYSIS_DIR || '.', `${TARGET_DATE}-report.md`);
   writeFileSync(tmpFile, reportContent, 'utf-8');
 
   const publisher = '/Users/totti/.qclaw/skills/feishu-md-publisher/publish.py';
 
+  // 查同名旧文档，有则原地更新内容，无则新建
+  const oldDoc = await findChildWithObj(monthToken, title);
+  if (oldDoc) {
+    console.log(`  📝 更新旧文档: ${title}`);
+    const cleared = await clearDocumentContent(oldDoc.objToken);
+    if (!cleared) {
+      console.log(`  ⚠️ 清空旧文档失败，改走新建流程`);
+    } else {
+      try {
+        const out = execSync(`python3 ${publisher} --append --doc-token ${oldDoc.objToken} --file ${tmpFile}`, {
+          encoding: 'utf-8', timeout: 60000,
+        });
+        console.log(`  ✅ ${title}`);
+        console.log(`  🔗 https://my.feishu.cn/docx/${oldDoc.objToken}`);
+        return out;
+      } catch (e) {
+        console.log(`  ⚠️ 追加内容失败(${e.message?.substring(0,80)})，改走新建流程`);
+      }
+    }
+  }
+
+  // 无旧文档或更新失败 → 新建
+  console.log(`  📄 新建文档: ${title}`);
   try {
-    const out = execSync(`python3 "${publisher}" --title "${title}" --file "${tmpFile}" --parent ${monthToken}`, {
+    const out = execSync(`python3 ${publisher} --title ${title} --file ${tmpFile} --parent ${monthToken}`, {
       encoding: 'utf-8', timeout: 60000,
     });
     const urlMatch = out.match(/https:\/\/[^\s]+/);
@@ -1152,8 +1174,6 @@ export async function publishToWiki(reportContent) {
     if (urlMatch) console.log(`  🔗 ${urlMatch[0]}`);
     return out;
   } catch (e) {
-    // feishu-md-publisher 可能在内容写入时因 size 限制失败, 但文档已创建
-    // 从 stdout 中提取 doc_token
     const stdout = e.stdout || '';
     const docTokenMatch = stdout.match(/文档创建成功:\s*([a-zA-Z0-9]+)/);
     if (docTokenMatch) {

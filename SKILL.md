@@ -550,7 +550,8 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 
 ## 飞书 Wiki 发布逻辑
 
-`publishToWiki()` 使用 **覆盖而非追加** 的策略：
-1. 在同名旧文档：通过 `moveNode` 将其移回根目录（POST `/wiki/v2/spaces/:space/nodes/:token/move`）
-2. 腾出位置后，通过 `feishu-md-publisher` 创建新文档
-3. 结果：月文件夹内永远只有最新版文档
+`publishToWiki()` 使用 **原地更新** 策略：
+1. 查同名旧文档：`findChildWithObj(monthToken, title)`
+2. 有旧文档：先 `clearDocumentContent`（清空所有 blocks），再 `publish.py --append` 追加新内容
+3. 无旧文档：`publish.py --title --file --parent` 新建
+4. 结果：**文档 token 不变、节点位置不变、月文件夹内永远只有一篇**
