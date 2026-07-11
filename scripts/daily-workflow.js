@@ -1011,37 +1011,6 @@ export async function analyzeArticles(downloaded) {
         specialView: a.specialView?.substring(0, 200) || '',
       })).filter(a => a.marketView || a.sectors.length > 0 || a.stocks.length > 0);
       
-      // 限制 JSON 体积不超过 1.5MB（Kimi Codex API 单次请求上限 2MB，留余量给模板文本）
-      const MAX_JSON_BYTES = 1_500_000;
-      let jsonStr = JSON.stringify(extractData, null, 2);
-      if (Buffer.byteLength(jsonStr, 'utf-8') > MAX_JSON_BYTES) {
-        console.log(`  ⚠️  extractData JSON 体积 ${(Buffer.byteLength(jsonStr, 'utf-8') / 1024).toFixed(1)}KB，超出 1.5MB 限制，逐层截断`);
-        // strategy 1: 压缩 JSON（无缩进）
-        jsonStr = JSON.stringify(extractData);
-        if (Buffer.byteLength(jsonStr, 'utf-8') > MAX_JSON_BYTES) {
-          // strategy 2: 减少条目，去掉 stocks/sectors 冗余
-          const trimmed = extractData.map(a => ({
-            source: a.source,
-            marketView: a.marketView,
-            sectors: (a.sectors || []).slice(0, 5),
-            stocks: (a.stocks || []).slice(0, 5),
-            coreView: a.coreView,
-            strategy: a.strategy,
-            risk: a.risk,
-            framework: a.framework,
-            specialView: a.specialView,
-          }));
-          jsonStr = JSON.stringify(trimmed);
-          if (Buffer.byteLength(jsonStr, 'utf-8') > MAX_JSON_BYTES) {
-            // strategy 3: 减半条目
-            const half = extractData.slice(0, Math.ceil(extractData.length / 2));
-            jsonStr = JSON.stringify(half);
-            console.log(`  ⚠️  截断到 ${half.length} 个条目，压缩后 ${(Buffer.byteLength(jsonStr, 'utf-8') / 1024).toFixed(1)}KB`);
-          }
-        }
-      }
-      console.log(`  📦 Phase2e 输入 JSON: ${(Buffer.byteLength(jsonStr, 'utf-8') / 1024).toFixed(1)}KB`);
-
       const synthesisPrompt = `你是一个资深财经分析师。请将以下${extractData.length}篇公众号财经文章的结构化提取数据，重新组织成一份专业、主题导向的投资简报。
 
 **格式要求：**
@@ -1052,7 +1021,7 @@ export async function analyzeArticles(downloaded) {
 5. 保留每位博主的关键判断和署名
 
 **输入数据（JSON格式）：**
-${jsonStr}
+${JSON.stringify(extractData, null, 2)}
 
 **输出要求：**
 - 使用 ## 二级标题和 ### 三级标题
