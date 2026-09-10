@@ -598,10 +598,6 @@ const MERGE_PROMPT = `你是一位专业的财经汇总分析师。以下是多�
 // ═══════════════════════════════════════════════════════════════════
 
 // Direct HTTP call to gateway chat completions API (bypasses slow openclaw infer CLI)
-const GATEWAY_AUTH = {
-  port: JSON.parse(readFileSync(join(process.env.HOME || '~', '.qclaw', 'openclaw.json'), 'utf-8')).gateway.port,
-  token: JSON.parse(readFileSync(join(process.env.HOME || '~', '.qclaw', 'openclaw.json'), 'utf-8')).gateway.auth.token,
-};
 
 function callLlm(prompt) {
   return new Promise((resolve, reject) => {
@@ -896,10 +892,6 @@ export function buildStructuredReport(articles, targetDate, totalCount) {
 
 
 export async function analyzeArticles(downloaded) {
-  // 清理残留 zombie openclaw-infer 进程，避免阻塞新推理
-  try {
-    execSync(`ps aux | grep 'openclaw-infer' | grep -v grep | awk '{print $2}' | xargs -r kill -9 2>/dev/null`, { timeout: 5000 });
-  } catch { /* non-fatal */ }
 
   if (downloaded.length === 0) { console.log('⚠️  没有文章需要分析'); return null; }
 
@@ -1140,7 +1132,7 @@ export async function publishToWiki(reportContent) {
   const tmpFile = join(ANALYSIS_DIR || '.', `${TARGET_DATE}-report.md`);
   writeFileSync(tmpFile, reportContent, 'utf-8');
 
-  const publisher = '/Users/totti/.qclaw/skills/feishu-md-publisher/publish.py';
+  const publisher = '/Users/totti/Totti_Skill/feishu-md-publisher/publish.py';
 
   // 查同名旧文档，有则原地更新内容，无则新建
   const oldDoc = await findChildWithObj(monthToken, title);

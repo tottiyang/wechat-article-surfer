@@ -91,7 +91,7 @@ node src/cli.js login
   "feishu": {
     "sheet_token": "飞书表格token",
     "sheet_id": "工作表ID",
-    "token_file": "~/.qclaw/skills-config/feishu/tokens/user_token.json",
+    "token_file": "/Users/totti/script/cron/feishu/tokens/user_token.json",
     "space_id": "Wiki空间ID",
     "default_parent_node": "Wiki父节点token"
   },
@@ -282,7 +282,7 @@ curl -s -X POST "https://ima.qq.com/openapi/wiki/v1/add_knowledge" \
 
 ```
 1. TARGET_DATE=$(date -v-1d +%Y-%m-%d)
-2. cd ~/.qclaw/skills/wechat-article-surfer
+2. cd /Users/totti/Totti_Skill/wechat-article-surfer
 3. NODE_PATH=$(which node || echo "/opt/homebrew/bin/node")
 4. ./scripts/launch-daemon.sh "daily-workflow-$TARGET_DATE" \
      . \
@@ -304,7 +304,7 @@ flowchart LR
 ### 一次性测试（立即执行）
 
 ```bash
-cd ~/.qclaw/skills/wechat-article-surfer
+cd /Users/totti/Totti_Skill/wechat-article-surfer
 ./scripts/launch-daemon.sh "daily-workflow-test" . /tmp/daily-test.log \
   /opt/homebrew/bin/node scripts/daily-workflow.js --date 2026-06-17
 ```

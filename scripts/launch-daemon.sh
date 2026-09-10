@@ -9,7 +9,7 @@
 #
 # 示例:
 #   ./scripts/launch-daemon.sh daily-workflow \
-#     ~/.qclaw/skills/wechat-article-surfer \
+#     /Users/totti/Totti_Skill/wechat-article-surfer \
 #     /tmp/daily-workflow.log \
 #     node scripts/daily-workflow.js
 #
