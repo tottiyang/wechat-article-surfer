@@ -112,6 +112,14 @@ async function cmdDownload(url) {
 async function cmdDump(fakeid, count) {
   const { getArticleList, downloadArticle } = await import('./proxy.js');
 
+  // 防止 search 之后立即拉文章列表触发微信 freq control
+  // 仅在 grab 调用时 (传 sleep=true) 加 3 秒延迟
+  if (cmdDump._fromGrab) {
+    console.log('⏳ 等 3 秒避开微信 freq control...');
+    await new Promise(r => setTimeout(r, 3000));
+    cmdDump._fromGrab = false;
+  }
+
   const result = await getArticleList(fakeid, { size: parseInt(count) || 10 });
   if (result.ret !== 0) {
     console.error('❌ 获取文章列表失败');
@@ -234,6 +242,7 @@ async function cmdGrab(name, count) {
     console.log(`   (找到 ${list.length} 个同名, 已选第一个)`);
   }
   console.log(`📥 开始抓取最近 ${n} 篇...\n`);
+  cmdDump._fromGrab = true;
   await cmdDump(target.fakeid, String(n));
 }
 
