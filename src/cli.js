@@ -205,6 +205,38 @@ function sanitizeFilename(name) {
 
 function escapeYAML(s) { return s.replace(/"/g, '\\"'); }
 
+// ========== Grab (one-shot: search by name + dump) ==========
+// 入口: 用户说 "抓 XX 公众号最近 N 篇"
+// 内部: searchBiz(公众号名) → 取首个 fakeid → cmdDump
+async function cmdGrab(name, count) {
+  if (!name) {
+    console.error('❌ 用法: node src/cli.js grab <公众号名> [N]');
+    return;
+  }
+  const n = Math.min(Math.max(parseInt(count) || 5, 1), 20);
+  console.log(`🔍 搜索公众号: ${name}`);
+  const { searchBiz } = await import('./proxy.js');
+  const searchResult = await searchBiz(name);
+  if (searchResult.base_resp?.ret !== 0) {
+    console.error('❌ 搜索失败:', searchResult.base_resp?.err_msg || '未知错误');
+    console.error('   请先检查登录状态: node src/cli.js status');
+    return;
+  }
+  const list = searchResult.list || [];
+  if (list.length === 0) {
+    console.error(`❌ 未找到公众号: ${name}`);
+    console.error('   试试其他关键词');
+    return;
+  }
+  const target = list[0];
+  console.log(`✅ 命中: ${target.nickname} (FakeId: ${target.fakeid})`);
+  if (list.length > 1) {
+    console.log(`   (找到 ${list.length} 个同名, 已选第一个)`);
+  }
+  console.log(`📥 开始抓取最近 ${n} 篇...\n`);
+  await cmdDump(target.fakeid, String(n));
+}
+
 // ========== Main ==========
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -216,6 +248,7 @@ async function main() {
     case 'articles': return cmdArticles(args[0]);
     case 'download': return cmdDownload(args[0]);
     case 'dump': return cmdDump(args[0], args[1]);
+    case 'grab': return cmdGrab(args[0], args[1]);
     default:
       console.log(`
 使用方法:
@@ -224,7 +257,8 @@ async function main() {
   node src/cli.js search <关键词>   # 搜索公众号
   node src/cli.js articles <id>   # 查看文章列表
   node src/cli.js download <URL>  # 下载单篇文章
-  node src/cli.js dump <id> [n]   # 批量导出
+  node src/cli.js dump <id> [n]   # 批量导出 (需要 fakeid)
+  node src/cli.js grab <公众号名> [N]  # 一键抓取 (合并 search+dump)
 
 先登录：node src/cli.js login → 浏览器扫码
 `);

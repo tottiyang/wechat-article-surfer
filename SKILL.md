@@ -142,6 +142,19 @@ node src/cli.js dump <fakeid> 20
 node src/cli.js download https://mp.weixin.qq.com/s/xxx
 ```
 
+**一键抓取（grab）**：合并 search + dump，适合手动抓单个公众号最近 N 篇（不调 AI、不传 IMA）
+
+```bash
+node src/cli.js grab "投资明见" 5   # 抓"投资明见"公众号最近 5 篇
+```
+
+- N 默认 5，最大 20（防误抓太多）
+- 内部自动 search → 取首个 fakeid → dump
+- 多个同名公众号时取第一个，提示列表让用户判断
+- 无 cookie 时返回"未登录"提示，需先 `node src/cli.js login`
+- 抓取结果保存到 `.data/articles/`（与 dump 一致）
+- **触发词**：用户说"抓 XX 公众号最近 N 篇" / "拉 XX 公众号" / "取 XX 公众号文章"
+
 ### 2. 文件命名规则
 
 ```
