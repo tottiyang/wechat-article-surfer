@@ -630,7 +630,11 @@ function callLlm(prompt) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        // kimi-for-coding = K2.8 Preview，1M 上下文（账号唯一 1M 模型）。
+        // supports_thinking_type="only"（强制思考），必须显式 disabled，
+        // 否则回包 content[0] 是 thinking 块 → 下方取值恒为空 → 抛 empty content。
         model: 'kimi-for-coding',
+        thinking: { type: 'disabled' },
         max_tokens: 16384,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -642,11 +646,19 @@ function callLlm(prompt) {
       })
       .then(data => {
         clearTimeout(timeout);
-        const content = data.content?.[0]?.text || '';
+        // 不能只取 content[0]：强制思考模式下第0块是 thinking 而非 text。
+        // 按类型过滤 text 块（与 read-and-save.js / llm_router.py 一致）。
+        const blocks = data.content || [];
+        const content = blocks
+          .filter(b => b && b.type === 'text')
+          .map(b => b.text || '')
+          .join('')
+          .trim();
         if (content) {
           resolve(content);
         } else {
-          reject(new Error('Kimi API returned empty content'));
+          reject(new Error('Kimi API returned empty content (blocks: ' +
+            blocks.map(b => b && b.type).join(',') + ')'));
         }
       })
       .catch(err => {
@@ -897,12 +909,17 @@ export async function analyzeArticles(downloaded) {
 
   console.log(`\n🧠  AI 分析 ${downloaded.length} 篇`);
 
-  // Read all articles (increase content length for better extraction)
+  // Read all articles.
+  // 截断上限：1M 上下文仍有ample 富余（账号唯一 1M 模型 kimi-for-coding = K2.8）。
+  // 实测 67 篇真实文章合计 118,156 字符 ≈ 63,647 tok，仅占 1M 的 6.1%。
+  // 按 10 篇/批的最坏情况（10 篇最大文章 42,769 字符 ≈ 22,891 tok）仍只占 2.2%，
+  // 故 500_000 字符/篇 的上限在实践中永不触发，却能防住异常超长文章。
+  const MAX_ARTICLE_CHARS = 500000; // ≈250K tok/篇，10篇/批 仍有 1M 余量
   const articles = downloaded.map(f => ({
     bizName: f.bizName,
     title: f.title,
     url: f.url,
-    content: readFileSync(f.filePath, 'utf-8').slice(0, 4000),
+    content: readFileSync(f.filePath, 'utf-8').slice(0, MAX_ARTICLE_CHARS),
   }));
 
   // 分批提取（10篇/批→6批=6次调用，减少超时风险）

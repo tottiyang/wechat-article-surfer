@@ -558,8 +558,32 @@ E列格式：`YYYY-MM-DD HH:MM:SS|结果|详情`
 }
 ```
 
-**注意**：KIMI_API_KEY 除了在 `~/.zshrc` 中，也写入了 `config.json` 的 `kimi.api_key` 字段。
+**注意**：KIMI_API_KEY 除了在 `~/.zshrc` 中，也写入了 `config.json`的 `kimi.api_key` 字段。
 `callLlm()` 会优先从 `process.env.KIMI_API_KEY` 读取，fallback 到 `config.json`。
+
+### Kimi 模型配置（2026-10-02 实测校准）
+
+本skill 全部用 `kimi-for-coding`（= **K2.8 Preview，账号唯一 1M 上下文模型**）。
+注意该名字有误导性——**它不是 K3**。K3（`k3`）在当前套餐上限仅 256K，1M 需升级套餐。
+
+两个必须遵守的约定（否则必然报错）：
+
+1. **必须显式 `thinking: { type: 'disabled' }`**。
+   该模型 `supports_thinking_type = "only"`（强制思考），不关闭时回包
+   `content[0]` 是 `thinking` 块而非 `text` 块。
+2. **必须按 type 过滤 text 块，不能只取 `content[0]`**。
+   正确写法（`report-enhancer.js` / `daily-workflow.js` 已按此实现）：
+   ```js
+   const blocks = data.content || [];
+   const text = blocks.filter(b => b && b.type === 'text')
+                      .map(b => b.text || '').join('').trim();
+   ```
+   旧写法 `data.content[0].text` 在思考模式下恒为空 → 抛 `Kimi API returned empty content`。
+
+实测余量（`.data/articles` 真实 67 篇样本，中位 3,317 / 最大 21,645 字符）：
+- 10 篇/批最坏情况 42,769 字符 ≈ 22,891 tok → 占 1M 的 **2.2%**
+- 全部 67 篇一次喂入 118,156 字符 ≈ 63,647 tok → 占 1M 的 **6.1%**
+- 单篇截断上限 `MAX_ARTICLE_CHARS = 500000`（≈250K tok），实践永不触发，仅防异常超长文章。
 
 ## 飞书 Wiki 发布逻辑
 

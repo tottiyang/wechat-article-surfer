@@ -205,7 +205,11 @@ function callLlm(prompt) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        // kimi-for-coding = K2.8 Preview，1M 上下文（账号唯一 1M 模型）。
+        // 该模型 supports_thinking_type="only"（强制思考），不显式关闭时回包 content[0]
+        // 是 thinking 块，下方 content[0].text 恒为空 → 抛 empty content。
         model: 'kimi-for-coding',
+        thinking: { type: 'disabled' },
         max_tokens: 4096,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -217,11 +221,19 @@ function callLlm(prompt) {
       })
       .then(function (data) {
         clearTimeout(timeout);
-        var content = data.content && data.content[0] && data.content[0].text || '';
+        // 不能只取 content[0]：强制思考模式下第0 块是 thinking 而非 text。
+        // 按类型过滤出 text 块（与 read-and-save.js / llm_router.py 一致）。
+        var blocks = data.content || [];
+        var content = blocks
+          .filter(function (b) { return b && b.type === 'text'; })
+          .map(function (b) { return b.text || ''; })
+          .join('')
+          .trim();
         if (content) {
           resolve(content);
         } else {
-          reject(new Error('Kimi API returned empty content'));
+          reject(new Error('Kimi API returned empty content (blocks: ' +
+            blocks.map(function (b) { return b && b.type; }).join(',') + ')'));
         }
       })
       .catch(function (err) {
